@@ -1,0 +1,139 @@
+---
+title: "Hardware and interfaces"
+description: "Pin assignments, peripheral wiring, analog front-end assumptions, and hardware verification notes for the Ethicstech IoT Gateway Lite."
+sidebarTitle: "Hardware"
+---
+
+The firmware targets an ESP32 module with specific pins assigned to cellular, RS-485, Ethernet, I2C, digital inputs, and control signals. Several pin choices overlap with typical ESP32 flash or strapping pins, so you should verify them against the exact module and PCB schematic before bringing up a board.
+
+All pin definitions below come from `definitions.h`.
+
+## Pin table by peripheral
+
+### GSM/SIM7672S modem
+
+| Signal | GPIO | Direction | Notes |
+| --- | --- | --- | --- |
+| PWR | 5 | Output | Power-key control |
+| TX | 17 | Output | UART2 TX to modem |
+| RX | 16 | Input | UART2 RX from modem |
+| RST | 18 | Output | Modem reset |
+
+UART2 runs at 115200 baud. `sim_switch` is hard-coded to `false` in `definitions.h` (line 35), so the firmware only probes SIM1 at boot.
+
+### RS-485 / Modbus
+
+| Signal | GPIO | Direction | Notes |
+| --- | --- | --- | --- |
+| RX | 9 | Input | `HardwareSerial(1)` RX |
+| TX | 10 | Output | `HardwareSerial(1)` TX |
+| DE + RE | 26 | Output | Shared direction-control pin (both `MAX485_DE` and `MAX485_RE_NEG`) |
+
+Direction control is handled by `preTransmission()` and `postTransmission()` in `functions.h` (L760-767). Both DE and RE are driven by the same GPIO, so the bus is in receive mode when the pin is `LOW` and transmit mode when `HIGH`. A 20 ms delay after pulling the pin `LOW` is used at boot to keep the transceiver quiet while the UART initializes.
+
+<Warning>
+  GPIO 9 and 10 are typically connected to the SPI flash on many ESP32 modules (for example, ESP32-WROOM-32). Using them for UART1 may conflict with the flash bus depending on the module variant. This requires hardware verification.
+</Warning>
+
+### Ethernet (ENC28J60)
+
+| Signal | GPIO | Notes |
+| --- | --- | --- |
+| SCK | 14 | SPI clock |
+| MISO | 12 | SPI MISO |
+| MOSI | 13 | SPI MOSI |
+| CS | 32 | Chip select |
+| INT | 25 | Interrupt (configured but verify usage in code) |
+| RST | 27 | Reset |
+
+`SPI.begin(14, 12, 13, ETH_CS_PIN)` is called in `initEthernet()` (`functions.h` L180). The Ethernet MAC is derived from the ESP32 Wi-Fi MAC string, with the first character replaced by `'1'` (`parseMacAddress()` at `functions.h` L162).
+
+<Info>
+  GPIO 12 is a strapping pin on many ESP32 modules and must be held at the correct logic level at boot. GPIO 25 and 27 are generally safe, but verify against your module datasheet.
+</Info>
+
+### I2C (ADS1115 and MCP7940)
+
+| Bus | Device | I2C Address | Notes |
+| --- | --- | --- | --- |
+| Default SDA/SCL | ADS1115 | `0x48` | `Wire.begin()` is called with no pin arguments (`functions.h` L750), so the default ESP32 I2C pins are used. Verify which pins your module maps to SDA and SCL. |
+| Default SDA/SCL | MCP7940 | Library default | The `MCP7940` object is declared in `functions.h` L28; the library default address is used. |
+
+The ADS1115 is configured for +/-6.144 V range and continuous mode. The MCP7940 is initialized, started, and battery-backed at boot (`initRTC()`, `startRTC()`, `rtcBattery()` in `functions.h` L1354-1393).
+
+### Digital inputs and control
+
+| Signal | GPIO | Configuration | Notes |
+| --- | --- | --- | --- |
+| IO1 | 19 | `INPUT_PULLDOWN` | Digital input channel 1 |
+| IO2 | 4 | `INPUT_PULLDOWN` | Digital input channel 2 |
+| SIM select (SS) | 2 | Output | `HIGH` = SIM1, `LOW` = SIM2 |
+| BOOT button | 0 | `INPUT_PULLUP` | Double-press within 600 ms triggers factory reset |
+| LED | 33 | Output | Status/activity indicator |
+
+<Info>
+  GPIO 0 and GPIO 2 are strapping pins on ESP32. Their boot-time state affects ROM behavior and flash mode. Ensure the PCB keeps them at valid levels during reset.
+</Info>
+
+## RS-485 direction control
+
+The firmware toggles the MAX485 direction using two functions (`functions.h` L760-767):
+
+- `preTransmission()` sets `MAX485_DE` and `MAX485_RE_NEG` to `HIGH`, enabling the driver.
+- `postTransmission()` sets both to `LOW`, enabling the receiver.
+
+Because DE and RE are tied to the same GPIO (26), this is a simplex half-duplex bus. The ModbusMaster library calls these functions automatically around each request. A 5 ms delay is added after clearing the response buffer, and a 50 ms delay separates consecutive Modbus device reads.
+
+## Analog front-end assumptions
+
+The firmware relies on external front-end circuits to scale sensor signals into the ADS1115 input range. The scaling constants are inferred from the code and should be validated against the actual PCB:
+
+### 4-20 mA channels (A0, A1)
+
+- `read_420ma()` averages three samples over 30 ms.
+- Converts millivolts to milliamps by dividing by `149.5` (`functions.h` L866).
+- This implies an equivalent sense resistance of approximately 149.5 ohm. For example, 20 mA through 150 ohm produces 3000 mV, which fits comfortably in the +/-6144 mV range.
+- Values below 3.95 mA are clamped to `0`; values between 3.95 mA and 4 mA are clamped to `4`; values at or above 20 mA are clamped to `20`.
+
+<Info>
+  The 149.5 ohm value is an inference from the source code. Verify the actual sense resistor or transimpedance stage on the hardware before calibrating.
+</Info>
+
+### 0-10 V channels (A2, A3)
+
+- `read_10v()` averages three samples over 30 ms.
+- Maps 0..3000 mV to 0..10 V (`functions.h` L847).
+- This implies an external resistor divider that scales a 10 V input down to 3 V at the ADC pin, which is safe for the +/-6144 mV range.
+- Values are clamped to the 0..10 V range.
+
+<Info>
+  The 3 V full-scale assumption is inferred from the `map(value, 0, 3000, 0, 10)` call. Verify the actual divider ratio on the PCB.
+</Info>
+
+## Limits and constraints
+
+| Limit | Value | Source |
+| --- | --- | --- |
+| Max Modbus devices | 32 | `MAX_MODBUS_DEVICES` (`definitions.h` L59) |
+| Max registers per device | 150 | `MAX_REGISTERS_PER_DEVICE` (`definitions.h` L60) |
+| Analog 4-20 mA channels | 2 | ADS1115 A0, A1 |
+| Analog 0-10 V channels | 2 | ADS1115 A2, A3 |
+| Digital input channels | 2 | GPIO 19, GPIO 4 |
+| RS-485 buses | 1 | Shared by all Modbus devices; reconfigured per device each cycle |
+
+### Additional constraints
+
+- The RS-485 bus is re-initialized for every Modbus device on every transmit cycle (`initMAX485()` in `functions.h` L770). If devices use different baud rates or parity settings, the UART is reconfigured between reads. This adds overhead and a 50 ms gap between devices.
+- For Input Register and Holding Register reads, the firmware requests **two consecutive registers** per configured address (`functions.h` L800-827). If the second address does not exist on the slave, the read may fail and both keys are emitted as `"NA"`.
+- The loop that copies register addresses from the web form into the device struct does not bound `num_registers` against `MAX_REGISTERS_PER_DEVICE` in all paths (for example, Ethernet `saveModbusFromBody`). An out-of-bounds value could corrupt adjacent memory.
+
+## Items requiring schematic or bench verification
+
+| Item | Risk / Question |
+| --- | --- |
+| ESP32 module variant | GPIO 9/10 may be flash pins; GPIO 0/2/12 are strapping pins. Confirm which module the PCB is designed for. |
+| I2C SDA/SCL pins | `Wire.begin()` uses defaults. Confirm pull-ups and pin mapping for your module. |
+| MCP7940 I2C address | Not explicitly set in the firmware; rely on library default. Confirm the RTC chip variant on the board. |
+| 4-20 mA sense resistance | Verify the actual sense resistor value to calibrate `read_420ma()`. |
+| 0-10 V divider ratio | Verify the resistor divider to confirm the 3000 mV full-scale assumption. |
+| RS-485 transceiver biasing | Verify that the bus is properly biased in the idle state, since DE and RE are driven from a single GPIO. |

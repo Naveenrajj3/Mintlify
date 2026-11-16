@@ -1,0 +1,132 @@
+---
+title: "Build and setup"
+description: "Build environment notes, library dependencies, hardware prerequisites, and first-boot configuration for the Ethicstech IoT Gateway Lite firmware."
+sidebarTitle: "Build and setup"
+---
+
+This page covers what you need to know to build and flash the Ethicstech IoT Gateway Lite firmware, plus the first-boot steps to get a device online. Because the repository contains no build metadata, this documentation notes what is missing and what can be inferred from the source.
+
+## Build metadata status
+
+The repository does not include any of the following:
+
+- `platformio.ini`
+- `sketch.yaml`
+- Board definition or partition table CSV
+- Continuous integration scripts
+- Build logs or release artifacts
+- Library version pins
+
+As a result, the exact Arduino-ESP32 core version, partition scheme, and library versions required to reproduce a build are **not documented in the source**.
+
+## Inferred requirements
+
+| Requirement | Evidence | Confidence |
+| --- | --- | --- |
+| Arduino-ESP32 core supporting ESP-IDF 5 Task WDT API | `esp_task_wdt_config_t` struct used in `setup()` (`lite_V_0_6_ffat__hybrid.ino` L409) | Inferred |
+| ArduinoJson v7 | `JsonDocument` used in backend (`lite_V_0_6_ffat__hybrid.ino` L642); `DynamicJsonDocument(256)` used in some handlers (capacity arg is ignored in v7) | Inferred |
+| FFat partition scheme | `FFat.begin(true)` called in `setup()` (L1111) | Inferred; partition layout not provided |
+
+<Warning>
+  These inferences should be treated as starting points. You must verify them against a working build environment before production use.
+</Warning>
+
+## Referenced libraries and headers
+
+The following libraries are included across the source files. No version numbers are recorded anywhere in the repository.
+
+| Library / Header | Used for | Version recorded |
+| --- | --- | --- |
+| `ADS1115_WE` | ADS1115 ADC driver | No |
+| `ModbusMaster` | Modbus RTU over RS-485 | No |
+| `PubSubClient` | MQTT over Wi-Fi and Ethernet | No |
+| `UIPEthernet` | ENC28J60 Ethernet driver | No |
+| `HTTPClient` | HTTP/HTTPS over Wi-Fi | No |
+| `WiFi` / `WiFiClientSecure` | Wi-Fi STA/AP and TLS sockets | No |
+| `WebServer` | Embedded HTTP server | No |
+| `ArduinoJson` | JSON serialization and parsing | No |
+| `Update` | OTA firmware writes | No |
+| `FFat` / `FS` | FAT filesystem on flash | No |
+| `Preferences` | NVS key-value storage | No |
+| `ESP32Time` | Internal RTC abstraction | No |
+| `ESP32_FTPClient` | FTP uploads over Wi-Fi | No |
+| `MCP7940` | External RTC driver | No |
+| `esp_sntp` / `esp_task_wdt` | SNTP and task watchdog | No |
+| `SPI` / `Wire` / `HardwareSerial` | Arduino core built-ins | No |
+
+## Maintainer checklist
+
+If you are setting up a reproducible build environment, you should record at least the following:
+
+1. **Board / module**: exact ESP32 module variant (for example, ESP32-WROOM-32, ESP32-WROVER)
+2. **Arduino-ESP32 core version** (for example, 3.0.x, 2.0.x)
+3. **Partition scheme**: a layout that includes a FAT filesystem partition large enough for configuration JSON and backup files
+4. **Library versions**: exact versions of every third-party library listed above, preferably pinned in a `platformio.ini` or `library.properties`
+5. **CPU frequency and flash mode**: settings that affect timing-sensitive peripherals such as UART and SPI
+6. **Upload method and port**: whether you use USB-UART, OTA, or an external programmer
+
+## Hardware prerequisites
+
+Before the first boot, assemble or verify the following:
+
+- **ESP32 module** with available GPIOs as mapped in `definitions.h`
+- **ADS1115** on the default I2C bus, address `0x48`
+- **MCP7940** external RTC on the same I2C bus, with a backup battery
+- **ENC28J60** Ethernet module on the SPI pins defined in `definitions.h`
+- **SIM7672S** modem on UART2 (GPIO 16/17) with a valid SIM card
+- **RS-485 transceiver** (MAX485 or equivalent) on UART1 (GPIO 9/10) with DE/RE on GPIO 26
+- **Analog front ends** for 4-20 mA and 0-10 V inputs (see [Hardware](/hardware) for inferred scaling)
+- **Digital inputs** wired to GPIO 19 and 4
+- **PEM certificate files** on FFat, if you plan to use HTTPS mTLS (no upload route exists in the web UI; files must be placed by other means)
+
+## First-boot setup
+
+<Steps>
+  <Step title="Power on">
+    Apply power to the board. The firmware initializes Serial at 115200 and prints the software version.
+  </Step>
+  <Step title="Check FFat mount">
+    `FFat.begin(true)` runs in `setup()` (L1111). If the mount fails and formatting also fails, `setup()` returns early: no tasks start and the web UI is unreachable. A successful mount is required to proceed.
+  </Step>
+  <Step title="Connect to the default access point">
+    In factory default state, `settings.mode` is `"AP Only"` and the AP SSID is `"Iotgateway_lite"`. The default AP password is defined in `definitions.h` as `ap_pass`; check the source for the factory value.
+  </Step>
+  <Step title="Open the web UI">
+    Browse to `192.168.4.1` (the ESP32 default AP address). You should see the login page.
+  </Step>
+  <Step title="Log in">
+    The default credentials are `admin` / `admin`. Change the password immediately via `/profile` or `/reset` using the factory PIN defined as `RESET_PIN` in `definitions.h`.
+  </Step>
+  <Step title="Configure interfaces">
+    Go to **Network settings** to set Wi-Fi mode, STA credentials, Ethernet mode (Dynamic/Static), and/or GSM APN. Note that APN and `custom_apn` are not configurable through the web UI in the current code; if you need a non-default APN, you may need to edit `/settings.json` on FFat directly.
+  </Step>
+  <Step title="Configure protocols">
+    Go to **Protocols** to enable HTTP, MQTT, and/or TCP. Enter broker URLs, ports, auth tokens, and certificate paths as needed. Set `trans_delay` to control how often the backend transmits (default is 30 seconds).
+  </Step>
+  <Step title="Add Modbus devices">
+    Go to **Config** > **Add Modbus device** to define slave IDs, baud rates, parity, and register lists. Up to 32 devices are supported.
+  </Step>
+  <Step title="Save and reboot">
+    Most settings pages show a "saved" message and prompt you to reboot. Changes to Wi-Fi and network settings typically require a reboot to take full effect because the runtime copies are initialized during `setup()`.
+  </Step>
+</Steps>
+
+## Generic Arduino IDE flow (unverified)
+
+Because no build metadata exists, the following is a template for building with the Arduino IDE. It has not been validated against this repository.
+
+1. Install the **Arduino-ESP32 core** (3.x or later, to match the `esp_task_wdt_config_t` API).
+2. Install the libraries listed above through the Library Manager or from their GitHub repositories.
+3. Select your ESP32 board and a **partition scheme with FFat support** (for example, "Default 4MB with ffat" or a custom CSV).
+4. Open `lite_V_0_6_ffat__hybrid.ino` and click **Upload**.
+5. If upload fails due to size, increase the app partition or reduce the SPIFFS/FFat split.
+
+<Warning>
+  This flow is illustrative only. You must verify the core version, partition scheme, and library versions that are compatible with your hardware.
+</Warning>
+
+## Known boot-time behavior
+
+- If `settings.json`, `login.json`, or `servers.json` do not exist on FFat, the firmware creates them with factory defaults during `setup()` (`lite_V_0_6_ffat__hybrid.ino` L1116-1124).
+- If the MCP7940 is not detected, `external_rtc_connected` remains `false`, but the firmware still attempts to read it for timestamps. The resulting timestamp may be invalid until time sync succeeds.
+- If GSM internet comes up during `backendTask()` startup, Ethernet is **not initialized** (L462-474). To use Ethernet, ensure the modem does not establish internet first, or restructure the priority logic.

@@ -1,0 +1,116 @@
+---
+title: "Limitations and development challenges"
+description: "Current implementation constraints, risks, maintainability concerns, security issues, and open hardware/software questions."
+---
+
+This page documents confirmed constraints, areas that need bench testing, maintainability risks, and a set of open questions to review with the project team. Everything is drawn from what exists in `lite_V_0_6_ffat__hybrid.ino` (`main`), `functions.h` (`fn`), `definitions.h` (`def`), and `sima7672s.h` (`sima`).
+
+## Confirmed implementation constraints
+
+| Area | Constraint | Source |
+| --- | --- | --- |
+| Open Wi-Fi networks | STA mode requires both SSID and password to be non-empty. Open networks are unsupported. | `setupWiFi()` (`fn` L93) |
+| TCP over GSM | TCP is not implemented on the cellular path; only HTTP and MQTT are attempted. | `BackendTask` (`main` L802-864) |
+| Per-protocol delays | `http_delay`, `tcp_delay`, and `mqtt_delay` are stored in settings but never used by the scheduler. Only `trans_delay` controls the main cycle. | `BackendTask` (`main` L635) |
+| `mqtt_downlink` | The topic string is stored but no subscribe handler processes it. | `SettingsConfig` (`def` L81) |
+| APN configuration | No web UI handler writes `settings_s.apn` or `settings_s.custom_apn`. The APN cannot be changed from the UI. | Web handlers (`main`) |
+| `/latestdata.json` | Requested by the home page but never written by current code; returns 500. | `main` L80, UI route |
+| Ethernet web UI dependency | Ethernet is initialized only when GSM internet is not up at boot, so Ethernet web access is unavailable when cellular is online. | `BackendTask` (`main` L462-474) |
+| Backup JSON corruption | `finalizeJsonArray()` is called before every upload attempt; if upload fails, repeated `]` characters corrupt the JSON. | `fn` L1164, GSM/Ethernet/Wi-Fi upload paths |
+| Offline buffering tied to FTP | `appendJsonObject()` returns immediately unless `use_FTP` is true. Data is not queued if only HTTP/MQTT/TCP are enabled. | `fn` L951 |
+| Config mode discards data | When `wifiConfigMode` or `ethernetConfigMode` is active, the payload is dropped and `Count` is not incremented. | `BackendTask` (`main` L758) |
+| Watchdog coverage | Only `BackendTask` is registered with the task watchdog. No other task (web, button, OTA) is protected. | `main` L407-421 |
+| Dual-SIM disabled | `sim_switch` defaults to `false`, so `dual_sim_available` cannot become true at boot. | `def` L29, `BackendTask` boot flow |
+| sendSMS | AT command helper exists but is never called. | `sima` L354 |
+| Version parse | `compareVersion()` uses `sscanf("%d.%d.%d")`, which misinterprets leading `V` characters. | `main` L6081 |
+| CA certificate path bug | `prepareMtlsClient()` loads the CA from `http_client_cert_path` instead of `http_ca_cert_path`. | `fn` L491 |
+| Wi-Fi FTP port capture | The global `ESP32_FTPClient` object is constructed before settings are loaded, so a non-default FTP port may not apply until re-instantiation. | `fn` L27 |
+| No schema versioning | JSON files have no migration/version field. Missing keys default to 0 or empty strings. | Multiple load/save functions |
+| Partition requirement | FFat requires a FAT filesystem partition in the ESP32 partition table. No board definition or partition file is present in the repository. | `FFat.begin(true)` (`main` L1102) |
+
+## Risks requiring bench testing
+
+- **GPIO 9 and 10 for RS-485:** These are typically flash pins on many ESP32 modules. Verify which module variant the hardware uses; using them for serial may interfere with boot or SPI flash.
+- **ADS1115 I2C pins:** The code calls `Wire.begin()` with default pins. Confirm SDA/SCL routing matches the target board.
+- **Analog scaling:** The 10 V channel expects 3000 mV at the ADC (`fn` L840), implying an external divider. The 4-20 mA conversion divides by 149.5 (`fn` L859), implying a shunt resistor. Verify actual hardware matches these assumptions.
+- **MCP7940 presence:** The payload timestamp always reads from the external RTC with `+05:30` offset. If the RTC is missing, the timestamp value is undefined.
+- **SIM7672S power sequence timing:** `initGSM()` pauses for ~12 seconds (`sima` L33). Different power supply behaviors or module revisions may need different timing.
+- **Ethernet link timing:** `initEthernet()` expects 3 `LinkON` reads within 15 s. Some switches may take longer to negotiate; this needs testing with the actual switch.
+
+## Maintainability concerns
+
+### Monolithic structure
+
+The main sketch is roughly 7600 lines, containing task definitions, setup, inline HTML builders, route handlers, OTA logic, and transport code. There is no separation into modules or translation units. This makes concurrent edits difficult and increases the risk of merge conflicts.
+
+### Duplicated handler pairs
+
+The firmware contains near-duplicate logic for Wi-Fi and Ethernet routes:
+
+- `handleProtocolsPost` vs `saveProtocolsFromBody`
+- `handleNetworkSettingsPost` vs `saveNetworkSettingsFromBody`
+- `handleSaveModbusPost` vs `saveModbusFromBody`
+
+These pairs differ in input validation, bounds checking, and field clearing behavior. For example, the Wi-Fi `/add_modbus` handler rejects additions beyond 32 devices, while the Ethernet path does not. This inconsistency is easy to miss during maintenance.
+
+### Blocking delays in tasks
+
+The backend task contains multiple `delay()` calls inside its loop:
+
+- `led_blink()` blocks for the blink duration.
+- Modbus retries wait 50 ms between attempts.
+- `setupWiFi()` contains waits.
+- `initGSM()` blocks for ~12 seconds.
+
+These delays hurt determinism and can starve lower-priority work. The task watchdog timeout is set to 65 seconds to accommodate the worst case, which is far too coarse for normal operation.
+
+### Shared mutable globals without locks
+
+The `servers` struct is edited directly by the web task while the backend task reads it. There is no lock other than `ethernetSpiMutex`. Similarly, settings shadow copies (`settings_s`) are updated by the web task, then copied to `settings` on save. Race conditions are possible during form submissions or concurrent access.
+
+### Duplicate save/load functions
+
+The firmware defines two separate pairs for login settings:
+
+- `saveLoginSettings()` / `loadLoginSettings()`
+- `saveLogininSettings()` / `loadLogininSettings()`
+
+Both are called during setup. This duplication increases the risk of divergence when the field set changes.
+
+### Stale comments and dead code
+
+- The WebServerTask comment says "Core (0)" but the task is pinned to core 1 (`main` L1230).
+- Unused functions such as `saveTestDataToFFat()` (prototype only), `create_backup_file()`, and `store_data()` remain in the source.
+- Older send-count functions (`save_modbus_count`) exist only in commented-out paths.
+
+## Security concerns
+
+| Concern | Detail | Code reference |
+| --- | --- | --- |
+| Global auth flag | A single `isAuthenticated` boolean applies to all clients and both interfaces. Once any client logs in, all clients on Wi-Fi and Ethernet are treated as authenticated. | `main` L2828, web routes |
+| Unauthenticated upload | `POST /update` (Wi-Fi OTA) is not behind the auth gate. Anyone on the Wi-Fi network or AP can flash firmware. | `handleOTAUpdate` L6975 |
+| Unauthenticated auto-OTA toggle | `GET /set_auto_ota` is public on Wi-Fi and can change update behavior and the company name. | Auto-OTA handler |
+| Hard-coded defaults | Default STA password, AP password, and factory reset PIN are stored in source or `definitions.h`. | `def` |
+| Plaintext credentials | Login username and password are stored in plaintext in `/login.json` and compared in plaintext. | `saveLoginSettings`, `handleLoginPost` |
+| Credential disclosure | Login failure messages explicitly reveal whether the username or password was wrong, making enumeration easier. | `handleLoginPost` |
+| No HTTPS on Ethernet OTA | Ethernet OTA and HTTP use unencrypted transport. | `fn` L512, Ethernet upload path |
+| Weak HTTPS on Wi-Fi | Unless mTLS PEM files are configured, Wi-Fi HTTPS uses `setInsecure()` and skips server verification. | `fn` L491 |
+| MD5-only firmware checks | OTA uses MD5 for corruption detection, not authenticity or signature verification. | `Update.setMD5` usage |
+| No CSRF tokens | Web forms have no anti-CSRF tokens. | Web handlers |
+| No rate limiting | Login, PIN reset, and OTA endpoints lack rate limiting. | Web handlers |
+
+## Development challenges to confirm with the project team
+
+The following items are not established from source alone. They are questions the team should answer during hardware bring-up, field testing, and release planning.
+
+- **Hardware bring-up:** Which ESP32 module and partition scheme are intended for production? Does the selected module route GPIO 9/10 safely for RS-485?
+- **Modem/provider compatibility:** Has the SIM7672S/A7672S been validated with all listed carriers (Airtel, Jio, Vodafone, BSNL, and custom APNs)? Is the ~12 s power-up timing adequate across temperature ranges?
+- **Analog calibration:** What are the exact shunt and divider values on the PCB? Does the current ±6.144 V ADS1115 range and 149.5 Ω assumption match the actual design?
+- **Integration testing:** Is there a test bench that exercises all three networks (cellular, Ethernet, Wi-Fi) with a real Modbus slave and a real broker/server? If so, which protocol combinations are validated?
+- **Memory constraints:** The web task uses a 10240-byte stack and the backend uses 8192 bytes. Are these values based on worst-case measurements, or should they be profiled with the actual HTML pages and payload sizes?
+- **FFat partitioning:** What is the intended FAT partition size for field units? Is there a strategy for wear leveling or free-space monitoring?
+- **Field update process:** How will the OTA server version file format be managed? Will versions continue to include a leading `V`, or will they switch to plain numeric? How is the vendor OTA server secured?
+- **Dual-SIM strategy:** Is dual-SIM support a future feature, or should `sim_switch` and the secondary SIM path be removed to simplify the code?
+- **Ethernet/cellular coexistence:** Should Ethernet web UI and cellular uplink operate simultaneously? If yes, the boot-order dependency needs redesign.
+- **Credential lifecycle:** Should factory reset also clear `Preferences` (auto OTA flag and company name)? Currently they survive a BOOT-button reset.
+- **Test automation:** Is there a plan for automated unit tests (for example, `compareVersion`, payload JSON builder, and Modbus scaling) or continuous integration builds?

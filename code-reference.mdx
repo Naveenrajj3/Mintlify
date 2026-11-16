@@ -1,0 +1,278 @@
+---
+title: "Code reference"
+description: "Compact function index by subsystem and a glossary of hardware, protocol, and firmware terms."
+---
+
+This page is a quick lookup for function locations and terminology used across the firmware. Line numbers refer to `lite_V_0_6_ffat__hybrid.ino` (`main`), `functions.h` (`fn`), `definitions.h` (`def`), and `sima7672s.h` (`sima`).
+
+## Function index by subsystem
+
+### Tasks and setup
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `setup()` | `main` | 1092 | Serial, FFat, pin init, config load, task creation |
+| `loop()` | `main` | 1458 | Idle Arduino loop |
+| `WebServerTask()` | `main` | 132 | Wi-Fi `handleClient()` and Ethernet server router |
+| `BackendTask()` | `main` | 380 | Data acquisition, transport, time sync, watchdog |
+| `startAutoOTAUpdateTask()` | `main` | 6439 | Hourly auto-OTA background task |
+| `buttonMonitorTask()` | `main` | 1212 | BOOT button poll, double-click factory reset |
+
+### Configuration persistence
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `loadSettings()` | `main` | 1759 | Read `/settings.json` into `settings`, copy to `settings_s` |
+| `saveSettings()` | `main` | 1848 | Write `settings_s` to `/settings.json` |
+| `loadLoginSettings()` | `main` | 1695 | Read `/login.json` |
+| `saveLoginSettings()` | `main` | 1682 | Write `/login.json` |
+| `loadLogininSettings()` | `main` | 1919 | Duplicate login loader with fallback to admin/admin |
+| `saveLogininSettings()` | `main` | 1905 | Duplicate login saver |
+| `loadServerconfig()` | `main` | 1655 | Read `/servers.json`; on missing file saves defaults |
+| `saveServerconfig()` | `main` | 1632 | Write `/servers.json` |
+| `loadConfig()` | `main` | 1716 | Read `/modbus_gateway.json` (6 enable flags) |
+| `saveConfig()` | `main` | 1740 | Write `/modbus_gateway.json` from `mbConfig_s` |
+| `loadAllModbusDevices()` | `main` | 1611 | Read `/modbus_list.json` and per-device files |
+| `saveModbusDevice()` | `main` | 1523 | Write `/modbus_dev_<i>.json` |
+| `loadModbusDevice()` | `main` | 1551 | Read a single Modbus device JSON |
+| `saveModbusDeviceListCount()` | `main` | 1596 | Write `/modbus_list.json` with device count |
+| `loadAutoUpdateState()` | `main` | 1943 | Load `auto_ota` and `company_name` from Preferences |
+
+### Web UI handlers (Wi-Fi)
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `initWebServer()` | `main` | 7396 | Register all HTTP routes |
+| `handleRoot()` | `main` | 3927 | Home page (`/`) |
+| `buildHomePage()` | `main` | 1256 | Inline HTML for home page |
+| `handleInterfaceGet()` / `Post()` | `main` | 4021 / 4025 | Analog/IO enable flags (`/interface`) |
+| `handleServersGet()` / `Post()` | `main` | 4165 / 4171 | NTP and FTP settings (`/servers`) |
+| `handleNetworkSettingsGet()` / `Post()` | `main` | 4483 / 4488 | Wi-Fi/Ethernet network config (`/network_settings`) |
+| `handleProtocolsGet()` / `Post()` | `main` | 5020 / 5059 | Protocol selection and broker/endpoint config (`/protocols`) |
+| `handleConfigGet()` | `main` | 5834 | Modbus config page (`/config`) |
+| `buildConfigPage()` | `main` | 5415 | Inline HTML for config |
+| `handleAddModbusGet()` | `main` | 5840 | Add device form (`/add_modbus`) |
+| `handleEditModbusGet()` | `main` | 5864 | Edit device form (`/edit_modbus`) |
+| `handleSaveModbusPost()` | `main` | 5897 | Save device from Wi-Fi form (`/save_modbus`) |
+| `handleDeleteModbusGet()` | `main` | 5970 | Delete device (`/delete_modbus`) |
+| `handleLoginGet()` / `Post()` | `main` | 2584 / 2589 | Login page and credential check |
+| `handleLogout()` | `main` | 2838 | Clear global auth flag |
+| `handleResetGet()` / `Post()` | `main` | 2684 / 2798 | PIN-based password reset (`/reset`) |
+| `handleProfileGet()` / `Post()` | `main` | 7351 / 7355 | Change password/PIN (`/profile`) |
+| `handleOTAUpdate()` | `main` | 6975 | Wi-Fi firmware upload (`POST /update`) |
+
+### Ethernet web helpers
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `readEthernetPath()` | `main` | 362 | Parse Ethernet HTTP request line |
+| `getPostBody()` | `main` | 6001 | Read raw POST body from Ethernet client |
+| `getFormValue()` | `main` | 6023 | Extract form field from body |
+| `getQueryValue()` | `main` | 5990 | Extract query parameter from URL |
+| `saveProtocolsFromBody()` | `main` | 5024 | Ethernet save of protocol settings |
+| `saveNetworkSettingsFromBody()` | `main` | 4458 | Ethernet save of network settings |
+| `saveModbusFromBody()` | `main` | 6044 | Ethernet save of Modbus device |
+| `deleteModbusByIndex()` | `main` | 6066 | Ethernet delete Modbus device |
+| `handleEthernetOTAUpload()` | `main` | 6924 | Ethernet firmware upload (`POST /update_eth`) |
+| `buildOTAPageForEthernet()` | `main` | 6909 | Ethernet OTA HTML form |
+| `handleEthernetReboot()` | `main` | 7246 | Ethernet reboot handler |
+| `handleEthernetFactoryReset()` | `main` | 7251 | Ethernet factory reset handler |
+
+### OTA
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `startAutoOTAUpdateTask()` | `main` | 6439 | Background auto-OTA task |
+| `getVersionFromHTTP()` | `main` | 6093 | HTTP GET remote `version.txt` |
+| `compareVersion()` | `main` | 6081 | Parse and compare version strings |
+| `UpdateOTAFromURL()` | `main` | 6191 | Download `.bin` and flash via `Update` class |
+| `handleOTAUpdate()` | `main` | 6975 | Manual Wi-Fi OTA upload handler |
+| `handleEthernetOTAUpload()` | `main` | 6924 | Manual Ethernet OTA upload handler |
+| `buildOTAPage()` | `main` | 6569 | Wi-Fi OTA HTML form |
+| `buildRebootPage()` | `main` | 7145 | Reboot confirmation page |
+| `handleRebootGet()` / `Post()` | `main` | 7229 / 7238 | Reboot execution |
+| `buildFactoryResetPage()` | `main` | 5204 | Factory reset confirmation page |
+| `handlefactoryreset()` | `main` | 5182 | Factory reset execution (Wi-Fi) |
+
+### Wi-Fi and Ethernet networking
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `setupWiFi()` | `fn` | 93 | Init STA, AP, or both; static/DHCP |
+| `initEthernet()` | `fn` | 178 | ENC28J60 reset, MAC, DHCP/static, LinkON wait |
+| `checkEthernet()` | `fn` | 307 | Verify link and IP presence |
+| `ethIP()` | `fn` | 327 | Return Ethernet IP string |
+| `parseMacAddress()` | `fn` | 162 | Derive ENC28J60 MAC from ESP MAC |
+| `EthernetSpiGuard` | `fn` | 37 | RAII guard around `ethernetSpiMutex` |
+| `syncNTPWifi()` | `fn` | 1401 | Wi-Fi NTP via `configTime` |
+
+### MQTT
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `connect_MQTT_Ethernet()` | `fn` | 351 | PubSubClient connect over Ethernet |
+| `send_MQTT_Ethernet()` | `fn` | 387 | Publish over Ethernet |
+| `reconnect_mqtt_wifi()` | `fn` | 642 | Wi-Fi MQTT reconnect |
+| `send_MQTT_wifi()` | `fn` | 670 | Publish over Wi-Fi then disconnect |
+| `connectMQTT()` | `sima` | 319 | AT+CMQTT connect on GSM |
+| `gsmMQTT_send()` | `sima` | 436 | Publish on GSM |
+| `gsmMQTT_disconnect()` | `sima` | 429 | Disconnect GSM MQTT |
+| `callback()` | `sima` | 339 | Stub callback; no downlink handling |
+
+### HTTP
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `send_HTTP_Ethernet()` | `fn` | 512 | Plain HTTP POST over Ethernet |
+| `parseURL()` | `fn` | 410 | Parse `host:port/path` for Ethernet |
+| `send_HTTP_wifi()` | `fn` | 691 | HTTPS/HTTP POST over Wi-Fi via `HTTPClient` |
+| `buildHttpUrl()` | `fn` | 458 | Assemble scheme + URL |
+| `prepareMtlsClient()` | `fn` | 491 | Load PEM files for mTLS (CA path bug noted) |
+| `loadPemFromFFat()` | `fn` | 474 | Read PEM from FFat into string |
+| `applyHttpAuthHeaders()` | `fn` | 483 | Add Bearer or API-Key header |
+| `gsmHTTP_send()` | `sima` | 509 | AT+HTTP POST on GSM |
+
+### TCP
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `send_TCP_IP_Ethernet()` | `fn` | 598 | Raw TCP write over Ethernet |
+| `send_TCP_Data_WiFi()` | `fn` | 732 | Raw TCP write over Wi-Fi |
+
+### GSM modem
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `restartGSM()` | `sima` | 26 | Toggle modem reset line |
+| `initGSM()` | `sima` | 33 | Power-on sequence and ~12 s wait |
+| `sendATCommand()` | `sima` | 51 | Send AT command, read response |
+| `selectSIM()` | `sima` | 78 | Select SIM1 or SIM2 via GPIO |
+| `readSimSignalStrength()` | `sima` | 83 | AT+CSQ parser |
+| `isSimSignalPoor()` | `sima` | 106 | CSQ threshold check |
+| `monitorSimAndSwitch()` | `sima` | 114 | Auto-switch SIM on poor signal |
+| `simCheck()` | `sima` | 229 | Detect SIM presence |
+| `connectGSM()` | `sima` | 294 | Attach to network and activate PDP |
+| `checkInternet()` | `sima` | 584 | Check modem HTTP stack readiness |
+| `getIPv4FromCGDCONT()` | `sima` | 602 | Parse IPv4 from PDP context |
+| `gsmIP()` | `sima` | 628 | Return IP string placeholder |
+| `extractJSON()` | `sima` | 634 | Extract JSON from AT response |
+| `getTimeFromHTTP()` | `sima` | 647 | HTTP GET vendor time endpoint |
+| `clearFileContent()` | `sima` | 692 | Clear file on modem FS |
+| `waitForURC()` | `sima` | 767 | Wait for unsolicited result code |
+| `waitForLoginComplete()` | `sima` | 788 | Wait for network login confirmation |
+| `ftps_init_once()` | `sima` | 822 | Initialize FTPS context |
+| `gsm_FTP()` | `sima` | 843 | Upload via AT+CFTPS (TLS 1.2, port 21) |
+| `sendSMS()` | `sima` | 354 | Unused SMS helper |
+| `received_data()` | `sima` | 361 | Data callback stub |
+| `process()` | `sima` | 383 | Main loop stub for modem events |
+| `process_http()` | `sima` | 410 | HTTP-specific stub |
+
+### Modbus / RS-485
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `initMAX485()` | `fn` | 770 | Configure serial parity/stop bits, node begin |
+| `readModbus()` | `fn` | 800 | FC01/02/03/04 read with retry logic |
+| `clear_modbus()` | `fn` | n/a (implied) | Clear response buffer |
+
+### Analog
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `initADS1115()` | `fn` | 749 | Wire begin, set range, start continuous |
+| `readChannel()` | `fn` | 830 | Read single ADS1115 channel |
+| `read_10v()` | `fn` | 840 | Average 3 samples, map 0-3000 mV to 0-10 V |
+| `read_420ma()` | `fn` | 859 | Average 3 samples, convert mV to mA via 149.5 |
+
+### Storage and backup
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `appendJsonObject()` | `fn` | 951 | Append payload to `/backup_file.json` |
+| `finalizeJsonArray()` | `fn` | 1164 | Append `]` to close JSON array |
+| `hasStoredData()` | `fn` | 990 | Check backup file exists and has content |
+| `create_backup_file()` | `fn` | 882 | Older backup helper (unused) |
+| `store_data()` | `fn` | 894 | Older backup helper (unused) |
+| `readfile()` | `main` | 1500 | Read and print file to Serial |
+| `deleteFile()` | `main` | 1490 | Delete a file from FFat |
+
+### FTP
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `uploadToFTP_Wifi()` | `fn` | 1436 | Upload via `ESP32_FTPClient` (Wi-Fi) |
+| `sendFTPEthernet()` | `fn` | 1231 | Raw FTP control + data over Ethernet |
+| `connectFTPserver()` | `fn` | 1099 | Open FTP control connection |
+| `changeDirectory()` | `fn` | 1125 | CWD on FTP server |
+| `enterPassiveMode()` | `fn` | 1139 | PASV parser |
+| `sendData()` | `fn` | 1173 | Send file in 1 KB data chunks |
+| `waitForResponse()` | `fn` | 1083 | Read FTP server reply |
+| `sendFTP()` | `fn` | 1061 | Send FTP command string |
+
+### Time and RTC
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `initRTC()` | `fn` | 1354 | Detect MCP7940 |
+| `startRTC()` | `fn` | 1364 | Start MCP7940 oscillator |
+| `rtcBattery()` | `fn` | 1380 | Enable battery backup |
+| `adjustRTCTime()` | `fn` | 1396 | Set MCP7940 time |
+| `getNTPDateTime()` | `fn` | 1270 | UDP NTP via Ethernet, set both RTCs |
+| `sendNTPpacket()` | `fn` | 1255 | Build and send UDP NTP request |
+| `syncNTPWifi()` | `fn` | 1401 | NTP over Wi-Fi, set both RTCs |
+| `getTimeFromHTTP()` | `sima` | 647 | HTTP time from vendor endpoint |
+
+### Utilities
+
+| Function | File | Line | Purpose |
+| --- | --- | --- | --- |
+| `led_blink()` | `fn` | 946 | Blink LED with optional `last_network_fail` reset |
+| `getDeviceFolderName()` | `main` | 6433 | Return `company_name` or MAC without colons |
+| `printStorageInfo()` | `main` | n/a | Print free space (called in backend loop) |
+| `sendStyledRebootMessage()` | `main` | n/a | Generic HTML "saved; please reboot" page |
+
+---
+
+## Glossary
+
+| Term | Meaning in this project |
+| --- | --- |
+| **Modbus** | Serial communication protocol used to read registers and coils from industrial devices. |
+| **Modbus RTU** | Binary Modbus format over RS-485, used by this firmware. |
+| **RS-485** | Differential serial bus standard; the firmware uses it with a MAX485 transceiver. |
+| **MAX485 / DE / RE** | RS-485 transceiver and its driver/receiver enable pins, both driven by GPIO 26. |
+| **ADS1115** | 16-bit I2C ADC used for 4-20 mA and 0-10 V analog inputs. |
+| **ADC** | Analog-to-digital converter. |
+| **4-20 mA** | Industrial current-loop analog input; readings are converted from mV to mA. |
+| **FFat** | FAT filesystem library for ESP32, stored in a dedicated flash partition. |
+| **FAT** | The filesystem format used by FFat. |
+| **Preferences / NVS** | ESP32 non-volatile storage (`Preferences` library) used here for `auto_ota` and `company_name`. |
+| **OTA** | Over-the-air firmware update. |
+| **MD5** | Hash algorithm used here for firmware corruption detection, not for authentication. |
+| **NTP** | Network Time Protocol; used to synchronize the real-time clock. |
+| **RTC** | Real-time clock; external MCP7940 and internal ESP32Time (`rtc1`). |
+| **MCP7940** | External I2C real-time clock with battery backup. |
+| **AP / STA** | Access Point and Station modes of the ESP32 Wi-Fi radio. |
+| **SoftAP** | Software access point; the ESP32 hosts its own Wi-Fi network. |
+| **DHCP** | Automatic IP address assignment; supported on both Wi-Fi STA and Ethernet. |
+| **ENC28J60** | SPI Ethernet controller used for wired network access. |
+| **SPI** | Serial Peripheral Interface; used for Ethernet (SCK 14, MISO 12, MOSI 13, CS 32). |
+| **I2C** | Inter-integrated circuit bus; used for ADS1115 and MCP7940. |
+| **UART** | Universal asynchronous receiver-transmitter; used for RS-485 (UART1) and GSM modem (UART2). |
+| **APN** | Access Point Name; cellular data profile name (default "Airtel" / `airtelgprs.com`). |
+| **AT commands** | Text commands sent to the cellular modem to control network, HTTP, MQTT, and FTPS. |
+| **SIM7672S / A7672S** | 4G LTE modem module family used for cellular connectivity. |
+| **FTPS** | FTP over SSL/TLS; used on the GSM path with AT+CFTPS commands. |
+| **MQTT** | Lightweight publish/subscribe messaging protocol. |
+| **Broker** | The MQTT server that receives uplink messages. |
+| **QoS** | Quality of Service; the GSM MQTT path uses QoS 1. |
+| **Client ID** | MQTT client identifier; derived from MAC or company name. |
+| **mTLS** | Mutual TLS; optional client-certificate authentication for HTTPS on Wi-Fi. |
+| **PEM** | Base64-encoded certificate/key file format stored on FFat. |
+| **FreeRTOS** | Real-time operating system underlying the ESP32 Arduino core. |
+| **Task watchdog (TWDT)** | Hardware timer that reboots the system if a registered task does not reset it in time. |
+| **Core pinning** | Assigning a FreeRTOS task to a specific CPU core (this firmware pins web to core 1 and backend to core 0). |
+| **JSON** | Data format used for config files, payloads, and backup files. |
+| **Config mode** | A 30-second window after web activity during which the backend pauses acquisition and transport. |
+| **Backup file** | `/backup_file.json`; stores unsent payloads for later FTP upload. |
+| **Device folder name** | Folder or filename prefix used for FTP and OTA; derived from `company_name` or MAC without colons. |

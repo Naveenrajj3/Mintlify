@@ -1,0 +1,191 @@
+---
+title: "Data acquisition"
+description: "How the firmware reads analog inputs, digital IO, and Modbus registers to build each transmit payload."
+---
+
+This page describes the collection cycle, ADC conversions, digital inputs, and Modbus behavior that produce the JSON payload sent by [backendTask](/runtime-flow). All line references are from `functions.h` unless noted.
+
+## Collection cycle and timing
+
+Data collection is driven by `backendTask` (`lite_V_0_6_ffat__hybrid.ino` L635). The loop builds one `JsonDocument` every `settings.trans_delay` seconds:
+
+```cpp
+if(millis() - last_send_milli >= settings.trans_delay*1000){
+    last_send_milli = millis();
+    // ... build document ...
+}
+```
+
+- `trans_delay` is a `uint16_t` configured via the web UI under **Protocols**.
+- A value of `0` means the body runs on every loop iteration with no throttle.
+- There is no upper-bound validation in the UI or in `backendTask`.
+
+<Warning>
+  If the device enters config mode (web UI active) at the moment a cycle fires, the assembled payload is discarded. It is not buffered and `Count` is not incremented (`backendTask` L758-762).
+</Warning>
+
+## ADS1115 analog inputs
+
+The ADS1115 is initialized in `setup()` with `Wire.begin()`, a ±6.144 V range, and continuous mode (`functions.h` L749-757). Four channels are mapped as follows:
+
+| Channel | ADS1115 mux | Variable | Firmware key | Range |
+| --- | --- | --- | --- | --- |
+| 4-20 mA #1 | `ADS1115_COMP_0_GND` | `ma_1` | `4_20ma_1` | 4 to 20 mA |
+| 4-20 mA #2 | `ADS1115_COMP_1_GND` | `ma_2` | `4_20ma_2` | 4 to 20 mA |
+| 0-10 V #1 | `ADS1115_COMP_2_GND` | `v10_1` | `10v_1` | 0 to 10 V |
+| 0-10 V #2 | `ADS1115_COMP_3_GND` | `v10_2` | `10v_2` | 0 to 10 V |
+
+Channels are only added to the payload when the corresponding enable flag in `mbConfig` is true (`backendTask` L644-659).
+
+### Conversion formulas
+
+Both analog types average three samples taken 10 ms apart, then apply a mapping.
+
+**0-10 V (`read_10v`, L840-857)**
+
+```cpp
+value = map(avg_mV, 0, 3000, 0, 10);
+value = clamp(value, 0, 10);
+```
+
+So a 10 V input is expected to appear as 3000 mV at the ADC pin, implying an external voltage divider. This requires hardware verification for your board.
+
+**4-20 mA (`read_420ma`, L859-879)**
+
+```cpp
+value = avg_mV / 149.5;
+if (value >= 3.95 && value <= 4) value = 4;
+else if (value < 3.95)          value = 0;
+else if (value >= 20)           value = 20;
+```
+
+The divisor of 149.5 implies an approximate 149.5 Ω shunt resistor (Inferred). Values are clamped to the 0 to 20 mA window, with a dead-band near 4 mA that snaps low readings to 0 mA.
+
+Both results are stored as JSON strings via `String(float)`, which typically produces two decimal places.
+
+## Digital inputs
+
+Two digital inputs are read with `digitalRead()`:
+
+| Input | GPIO | Mode | Firmware key |
+| --- | --- | --- | --- |
+| IO1 | 19 | `INPUT_PULLDOWN` | `IO_1` |
+| IO2 | 4 | `INPUT_PULLDOWN` | `IO_2` |
+
+Values are stored as strings `"0"` or `"1"`. These are also gated by `mbConfig` enable flags (`backendTask` L662-669).
+
+<Info>
+  GPIO 9 and 10 are used for RS-485 RX and TX on `HardwareSerial(1)`. On many ESP32 modules these are flash pins, so the module variant must be verified against the PCB.
+</Info>
+
+## Modbus/RS-485 reads
+
+Modbus is configured via the web UI and stored in `modbusDevices[]`. Limits are defined in `definitions.h`:
+
+- `MAX_MODBUS_DEVICES` = 32
+- `MAX_REGISTERS_PER_DEVICE` = 150
+
+### Device configuration fields
+
+Each device uses a `ModbusDevice` struct with these fields:
+
+| Field | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `slave_id` | `uint8_t` | 1 |  |
+| `baud_rate` | `int` | 9600 |  |
+| `parity` | `char[8]` | `"None"` | `"None"`, `"Even"`, `"Odd"` |
+| `stop_bits` | `uint8_t` | 1 | 1 or 2 |
+| `reg_type` | `char[24]` | `"Holding Register"` | See mapping below |
+| `timeout` | `uint16_t` | 1000 | ms |
+| `num_registers` | `uint8_t` | 0 | Up to 150 |
+| `registers[150]` | `uint16_t` | n/a | 1-based addresses as entered by user |
+
+### Register type to function code mapping
+
+| `reg_type` | Function code | Quantity | Notes |
+| --- | --- | --- | --- |
+| `Discrete Input` | FC02 | 1 | 1 bit, single attempt |
+| `Coil` | FC01 | 1 | 1 bit, up to 3 attempts with 50 ms delay |
+| `Input Register` | FC04 | 2 | Up to 3 attempts with 50 ms delay |
+| `Holding Register` | FC03 | 2 | Up to 3 attempts with 50 ms delay |
+| (unknown/empty) | FC03 | 2 | Fallback to Holding Register |
+
+### Address handling
+
+The UI stores register numbers as **1-based** (for example, 40001). The code subtracts 1 before calling `readModbus()` (`backendTask` L683, L699, L717). For `Input Register` and `Holding Register`, the firmware always requests **2 consecutive registers** starting at `address - 1`, so the second response word corresponds to the next address (`address + 1`).
+
+### Key naming and value representation
+
+Keys are named `M<dev>_<addr>`, where `<dev>` is the 1-based index of the device in the list (not the slave ID), and `<addr>` is the original 1-based register number.
+
+Values are emitted as **decimal strings of raw uint16** with no scaling, signed interpretation, or float conversion:
+
+- Success: `String(get_response_modbus(0))` and `String(get_response_modbus(1))`
+- Failure: `"NA"` for both keys
+
+<Warning>
+  If a slave does not implement `addr+1`, the 2-register read can fail and both keys become `"NA"`. This behavior is device-dependent and should be verified against the slave's register map.
+</Warning>
+
+<Warning>
+  If adjacent register numbers are configured (for example, 40001 and 40002), the second read overwrites the first because both use keys `M1_40001` and `M1_40002`. Duplicate keys in the same device are therefore possible and the last write wins.
+</Warning>
+
+### Per-device serial reconfiguration
+
+For every device, `backendTask` calls `initMAX485()` each cycle to reconfigure `HardwareSerial(1)` with that device's baud rate, parity, and stop bits (`functions.h` L770-798). DE/RE are toggled by `preTransmission()` and `postTransmission()` on GPIO 26. A 5 ms task delay is inserted after each register read, and a 50 ms delay follows each device (`backendTask` L738-740).
+
+### Attempt and timeout behavior
+
+- **Discrete Input**: 1 attempt, no retry loop.
+- **Coil**: Up to 3 attempts with a 50 ms blocking `delay()` between each.
+- **Input/Holding**: Up to 3 attempts with a 50 ms blocking `delay()` between each.
+- If all attempts fail, both keys for that address are `"NA"`.
+
+## Timestamp, device ID, and counter
+
+After sensor and Modbus data are assembled, the payload is finalized with:
+
+- **timestamp** (`backendTask` L747-750): formatted from `MCP7940.now()` as `YYYY-MM-DDTHH:MM:SS+05:30`. The `+05:30` offset is hard-coded (IST). The code reads the external RTC even when `external_rtc_connected` is false, so the timestamp value requires hardware verification when the RTC is absent.
+- **Device_id** (`backendTask` L752): the ESP32 Wi-Fi MAC address with colons, for example `AA:BB:CC:DD:EE:FF`.
+- **Count** (`backendTask` L753): a `uint32_t` that increments after each successful cycle and resets to 0 on reboot.
+
+## Illustrative payload
+
+Below is an illustrative JSON object that matches the key names and types produced by the firmware. Only enabled channels and configured devices appear.
+
+```json
+{
+  "4_20ma_1": "12.34",
+  "4_20ma_2": "0.00",
+  "10v_1": "5.01",
+  "10v_2": "0.00",
+  "IO_1": "0",
+  "IO_2": "1",
+  "M1_40001": "230",
+  "M1_40002": "0",
+  "M2_5": "1",
+  "timestamp": "2026-01-15T10:30:00+05:30",
+  "Device_id": "AA:BB:CC:DD:EE:FF",
+  "Count": 42
+}
+```
+
+<Note>
+  ArduinoJson v7 preserves insertion order, so the keys appear in the order they were added.
+</Note>
+
+## Items requiring hardware verification
+
+- **ADS1115 wiring / I2C pins**: `Wire.begin()` uses default SDA/SCL. Verify these match your board.
+- **Analog calibration**: The 0-10 V divider and 4-20 mA shunt values are inferred from the scaling constants (3000 mV and 149.5). Calibrate against known inputs.
+- **RS-485 bus termination and biasing**: The firmware only toggles DE/RE; external termination is required for reliable multi-drop operation.
+- **Modbus slave register maps**: Confirm whether each requested address also supports `addr+1` to avoid unexpected `"NA"` pairs.
+- **GPIO 9/10 flash conflict**: If the module uses a variant where these are flash pins, RS-485 must be remapped.
+
+## Related pages
+
+- [Runtime flow](/runtime-flow) for timing, OTA pause, and config-mode behavior
+- [Networking](/networking) for how the payload is sent or queued
+- [Hardware](/hardware) for pin assignments and peripheral wiring
+- [Configuration](/configuration) for enabling channels and adding Modbus devices

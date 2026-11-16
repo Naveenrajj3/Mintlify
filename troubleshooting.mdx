@@ -1,0 +1,211 @@
+---
+title: "Troubleshooting"
+description: "Symptom-driven diagnosis for startup, Modbus, networking, time, OTA, and web UI issues."
+---
+
+Use this guide to narrow down common symptoms in the field. All line references are to `lite_V_0_6_ffat__hybrid.ino` (`main`), `functions.h` (`fn`), or `definitions.h` (`def`).
+
+<Info>
+  Serial output is at `115200` baud. Power the device through a stable USB supply or an adequately rated external supply while debugging.
+</Info>
+
+---
+
+## Startup and FFat
+
+<AccordionGroup>
+  <Accordion title="No serial output after power-on">
+    - **Code-based:** `setup()` (`main` L1092) starts `Serial.begin(115200)` immediately. If you see nothing, check your serial monitor baud rate and wiring.
+    - **Physical:** Verify the serial adapter ground is tied to the board ground, and the Tx/Rx lines are not swapped.
+  </Accordion>
+
+  <Accordion title="setup() returns early; no web UI and no tasks start">
+    - **Code-based:** `FFat.begin(true)` (`main` L1102) formats the partition if mount fails. If it still fails, `setup()` returns before any tasks are created. Check the serial log for FFat failure.
+    - **Physical:** The firmware requires a partition table with a FAT filesystem partition. Confirm your board is flashed with a compatible partition scheme.
+  </Accordion>
+
+  <Accordion title="Default settings keep reappearing after restart">
+    - **Code-based:** `readfile("settings.json")` returns false if the file is missing or unreadable, which triggers `saveSettings()` to write defaults (`main` L1107-1111). The same applies to `login.json` and `servers.json`. If a file is corrupted or empty, it may be overwritten with defaults.
+    - **Physical:** Unstable power during a file write can corrupt FFat contents.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Modbus and RS-485
+
+<AccordionGroup>
+  <Accordion title="Modbus reads return NA for all registers">
+    - **Code-based:** `readModbus()` (`fn` L800) tries up to 3 attempts with 50 ms delays. NA means the ModbusMaster library returned an error code. Check that the configured `slave_id`, `baud_rate`, `parity`, and `stop_bits` match the slave device. Verify `MAX485_DE`/`MAX485_RE_NEG` (`def` L47) is wired to GPIO 26.
+    - **Physical:** Confirm A/B polarity, termination resistors, and that the slave is powered. Some RS-485 transceivers need an external enable signal.
+  </Accordion>
+
+  <Accordion title="Reg_1..reg_N do not match what the slave expects">
+    - **Code-based:** The UI stores register numbers as 1-based, and the code subtracts 1 before reading (`fn` L800). Input/Holding registers read 2 consecutive addresses per configured register (`M<dev>_<addr>` and `M<dev>_<addr+1>`). If the slave does not have `addr+1`, the whole read can fail.
+    - **Physical:** Compare the configured register list against the slave's documentation.
+  </Accordion>
+
+  <Accordion title="Cannot add more than 32 devices">
+    - **Code-based:** `MAX_MODBUS_DEVICES` is 32 (`def` L52). The Wi-Fi handler `/add_modbus` rejects additions beyond that limit. The Ethernet handler does not enforce the same limit.
+    - **Physical:** Not applicable.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## ADS1115 analog channels
+
+<AccordionGroup>
+  <Accordion title="4-20 mA or 10 V always reads 0.00">
+    - **Code-based:** `initADS1115()` (`fn` L749) only proceeds if the library acknowledges the device. If initialization fails, only a log line is emitted. `read_420ma()` (`fn` L859) clamps values below ~3.95 mA to 0. `read_10v()` (`fn` L840) maps 0-3000 mV to 0-10 V. If the ADC sees no voltage, the mapped value is 0.
+    - **Physical:** Verify the external shunt resistor for 4-20 mA and verify the voltage divider for 10 V. Check the I2C pull-ups and that the ADS1115 address is 0x48.
+  </Accordion>
+
+  <Accordion title="10 V values look wrong">
+    - **Code-based:** The firmware expects 3000 mV at the ADS1115 input to represent 10 V (`fn` L840). If your divider scales differently, the output will be off. There is no calibration offset in the firmware.
+    - **Physical:** Measure the actual voltage at the A2/A3 pins with a multimeter and compare against the divider ratio.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Ethernet (ENC28J60)
+
+<AccordionGroup>
+  <Accordion title="Ethernet web UI unreachable when cellular is online">
+    - **Code-based:** `BackendTask` (`main` L462-474) initializes Ethernet only when GSM internet is **not** up at boot. If the modem connects first, `initEthernet()` is skipped. Because of this, the Ethernet server never starts.
+    - **Physical:** If you need Ethernet web access alongside cellular, a startup order change or manual init may be required.
+  </Accordion>
+
+  <Accordion title="Ethernet link never comes up">
+    - **Code-based:** `initEthernet()` (`fn` L178) requires 3 consecutive `LinkON` readings within 15 s. If the cable or switch is slow to negotiate, initialization may time out.
+    - **Physical:** Try a different cable, a direct connection to a PC, or a switch with auto-negotiation enabled. Check the ENC28J60 reset line on GPIO 27.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Wi-Fi
+
+<AccordionGroup>
+  <Accordion title="Device does not join an open Wi-Fi network">
+    - **Code-based:** `setupWiFi()` (`fn` L93) requires both `std_ssid` and `std_password` to be non-empty to start STA mode. Open networks are not supported.
+    - **Physical:** Confirm the SSID spelling and that the network is 2.4 GHz (if your module does not support 5 GHz).
+  </Accordion>
+
+  <Accordion title="AP does not appear">
+    - **Code-based:** AP mode requires both `ap_user` and `ap_pass` to be non-empty (`fn` L93). If either is empty, the AP is not started.
+    - **Physical:** Verify the ESP32 module is powered correctly and that you are scanning on 2.4 GHz.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Cellular (SIM7672S / A7672S)
+
+<AccordionGroup>
+  <Accordion title="SIM check fails at boot">
+    - **Code-based:** `simCheck()` (`sima` L229) runs after `initGSM()`. If the SIM is not detected, `sim_available` stays false and all GSM transports are skipped. `dual_sim_available` is gated by `sim_switch` (`def` L29), which defaults to `false`.
+    - **Physical:** Check SIM insertion, the SIM select line (GPIO 2), and antenna connection. Verify the modem power sequence on GPIO 5 completes.
+  </Accordion>
+
+  <Accordion title="APN appears wrong and cannot be changed from the web UI">
+    - **Code-based:** No web handler writes to `settings_s.apn` or `settings_s.custom_apn`. The APN is either the compile-time default or whatever was manually placed in `/settings.json` on FFat.
+    - **Physical:** If you need a different APN, edit `/settings.json` offline or change the default in `definitions.h` and re-flash.
+  </Accordion>
+
+  <Accordion title="checkInternet reports OK but data still does not send">
+    - **Code-based:** `checkInternet()` (`sima` L584) sets the modem HTTP stack URL to `google.com` and checks the AT response for `OK`. It does not confirm end-to-end IP reachability or a working data session.
+    - **Physical:** Confirm your data plan is active and that the tower supports the modem bands.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Time sync
+
+<AccordionGroup>
+  <Accordion title="NTP never connects; timestamp is wrong">
+    - **Code-based:** Time is sourced in this priority: GSM HTTP time (`getTimeFromHTTP`) then Ethernet NTP (`getNTPDateTime`) then Wi-Fi NTP (`syncNTPWifi`). The payload timestamp always uses `MCP7940` with `+05:30` offset (`main` L747-750), even if the RTC was never initialized.
+    - **Physical:** Ensure the MCP7940 battery is installed. If the RTC is missing or the battery is dead, the timestamp relies on an uninitialized or stale clock value.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## HTTP, MQTT, and TCP
+
+<AccordionGroup>
+  <Accordion title="HTTPS calls fail even with a CA configured">
+    - **Code-based:** `prepareMtlsClient()` (`fn` L491) loads the CA from `http_client_cert_path` instead of `http_ca_cert_path`. This is a code-level path bug. Also, unless mTLS files are present, Wi-Fi HTTPS uses `setInsecure()`.
+    - **Physical:** Ensure the PEM files are placed on FFat under the paths configured in `/settings.json`. There is no upload route for certificates.
+  </Accordion>
+
+  <Accordion title="TCP over cellular is not sent">
+    - **Code-based:** `BackendTask` (`main` L802-864) logs "TCP not supported over GSM" and does not attempt TCP via the modem. Only HTTP and MQTT are supported on GSM.
+    - **Physical:** If your endpoint requires TCP over cellular, use an intermediate broker or proxy.
+  </Accordion>
+
+  <Accordion title="MQTT keeps reconnecting but never publishes">
+    - **Code-based:** GSM MQTT uses AT+CMQTT commands with a 60-second keepalive. Wi-Fi MQTT disconnects after each publish (`send_MQTT_wifi` L670). If the broker rejects the client ID or credentials, the publish silently fails and the payload is appended to the backup file (if FTP is enabled).
+    - **Physical:** Verify broker IP, port, credentials, and that the uplink topic string is correct.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## FTP and backup
+
+<AccordionGroup>
+  <Accordion title="Backup file never uploads">
+    - **Code-based:** Offline buffering only works when `servers.use_FTP` is true (`fn` L951). Ethernet and Wi-Fi FTP also require `ntp_connected` to schedule the upload timer (`main` L873-905, L981-1005). If time is not synced, the upload is deferred.
+    - **Physical:** Ensure the FTP server is reachable and that the configured port matches the server.
+  </Accordion>
+
+  <Accordion title="Backup JSON is invalid after failed upload">
+    - **Code-based:** `finalizeJsonArray()` appends `]` at the start of every upload attempt (`sima` L851, `fn` L1437). If the upload fails, later appends produce malformed JSON.
+    - **Physical:** Not applicable.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## OTA
+
+<AccordionGroup>
+  <Accordion title="Auto OTA flashes every hour">
+    - **Code-based:** `compareVersion()` (`main` L6081) uses `sscanf("%d.%d.%d")`. If the local or remote version text includes a leading `V`, parsing may miscompare. Because the OTA task runs hourly, a false-positive upgrade check leads to repeated reflashing.
+    - **Physical:** Verify the contents of `version.txt` on the OTA server.
+  </Accordion>
+
+  <Accordion title="OTA over Ethernet never triggers">
+    - **Code-based:** Auto OTA skips if neither Ethernet nor Wi-Fi is connected (`main` L6439). Ethernet must have been initialized at boot (requires GSM to be down at that moment).
+    - **Physical:** Confirm Ethernet link is up and the OTA server is reachable from the Ethernet network.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Web UI
+
+<AccordionGroup>
+  <Accordion title="Live-value dialogs show 500 'File not found'">
+    - **Code-based:** `/latestdata.json` is requested by the home page but never written by the current firmware (`saveTestDataToFFat()` exists as a prototype at `main` L80). The server returns 500 because the file is missing.
+    - **Physical:** Not applicable.
+  </Accordion>
+
+  <Accordion title="Status widgets are empty when browsing over Ethernet">
+    - **Code-based:** The Ethernet router does not serve `/network_status`, `/io_status`, `/modbus_status`, `/latestdata.json`, or `/manual.pdf`. The home page built for Ethernet uses a simpler layout, so those widgets will not populate.
+    - **Physical:** Use the Wi-Fi interface for full status views, or query those JSON endpoints from Wi-Fi.
+  </Accordion>
+
+  <Accordion title="Device reboots every 30 minutes while I browse settings">
+    - **Code-based:** Config mode pauses the backend and suppresses sends, but the 30-minute restart rule (`main` L1084-1088) is based on `last_network_fail`. If no successful send occurs because config mode is active, the timer keeps advancing and the device reboots.
+    - **Physical:** Finish browsing quickly, or disable any protocol to reduce restart pressure.
+  </Accordion>
+
+  <Accordion title="No data during browsing (config mode)">
+    - **Code-based:** `BackendTask` (`main` L569-575) enters config mode after web activity and discards the current payload instead of buffering it. Data is lost for the duration of the 30-second config window.
+    - **Physical:** Not applicable.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,296 @@
+---
+title: "Web configuration interface"
+description: "How the Wi-Fi and Ethernet web servers work, route tables, form fields, JSON status endpoints, and security properties of the Ethicstech IoT Gateway Lite UI."
+sidebarTitle: "Web UI"
+---
+
+The Ethicstech IoT Gateway Lite exposes a single web interface over both Wi-Fi and Ethernet. The firmware runs two servers on port 80: an Arduino `WebServer` for Wi-Fi clients (`initWebServer()` L7396) and a hand-rolled `EthernetServer` router inside `webServerTask` (L132) for Ethernet clients. Both share the same HTML pages, but their route coverage and behavior differ in several ways.
+
+## Authentication model
+
+A single global boolean `isAuthenticated` controls access for every client on both interfaces. Once any user logs in successfully, all subsequent requests from any IP on Wi-Fi and Ethernet are treated as authenticated until `/logout` or a reboot clears the flag.
+
+<Warning>
+  There are no sessions, cookies, tokens, or per-client state. Logging in from one browser authenticates every other client on the network as well.
+</Warning>
+
+Credentials are compared in plaintext and stored in plaintext in `/login.json`. The login failure message explicitly reveals whether the username or password was wrong.
+
+## Config mode and backend pause
+
+Any web activity on Wi-Fi or Ethernet sets `wifiConfigMode` or `ethernetConfigMode` and records `lastWebActivity` via `recordWifiActivity()` (L121). When config mode is active, `backendTask` discards the current data payload and pauses all collection and transmission for 30 seconds after the last web request (L569). This prevents collisions between configuration writes and data transmissions, but it also means data is lost while you browse the UI.
+
+## Wi-Fi route table
+
+These routes are registered in `initWebServer()` (L7396). Most protected routes are wrapped with `handleProtectedPage()`, which redirects to `/login` when `isAuthenticated` is false.
+
+| Route | Method | Auth | Purpose | Side effects |
+| --- | --- | --- | --- | --- |
+| `/` | GET | Protected | Home / dashboard | n/a |
+| `/config` | GET | Protected | Modbus device list | n/a |
+| `/add_modbus` | GET | Protected | Add new Modbus device | Rejects beyond 32 devices |
+| `/edit_modbus` | GET | Protected | Edit device form | n/a |
+| `/save_modbus` | POST | Protected | Save device config | Writes `/modbus_dev_<i>.json` |
+| `/delete_modbus` | GET | Protected | Delete device | Writes `/modbus_list.json` |
+| `/interface` | GET, POST | Protected | Analog/IO enable flags | Writes `/modbus_gateway.json` |
+| `/servers` | GET, POST | Protected | NTP and FTP settings | Writes `/servers.json` |
+| `/network_settings` | GET, POST | Protected | Wi-Fi / Ethernet / AP mode | Writes `/settings.json` |
+| `/protocols` | GET, POST | Protected | HTTP, MQTT, TCP config | Writes `/settings.json` |
+| `/profile` | GET, POST | Protected | Change password / PIN | Writes `/login.json` |
+| `/ota` | GET | Protected | OTA upload page | n/a |
+| `/update` | POST | **None** | Wi-Fi OTA binary flash | Reboots on success |
+| `/reboot` | GET, POST | Protected | Reboot confirmation | Reboots if `now=1` or POST |
+| `/factory_reset` | GET, POST | Protected | Factory reset confirmation | Formats FFat and reboots |
+| `/login` | GET, POST | Public | Login page | Sets `isAuthenticated = true` |
+| `/logout` | GET | Protected | Logout confirmation | n/a |
+| `/confirm_logout` | GET | Public | Clears auth flag | Sets `isAuthenticated = false` |
+| `/reset` | GET, POST | **None** | Password reset with factory PIN | Writes `/login.json` |
+| `/set_auto_ota` | GET | **None** | Toggle auto OTA and company name | Writes Preferences |
+| `/ping` | GET | Public | Health check | Returns `OK` |
+| `/network_status` | GET | Public | JSON status snapshot | n/a |
+| `/io_status` | GET | Public | JSON IO enable flags | n/a |
+| `/modbus_status` | GET | Public | JSON Modbus device list | n/a |
+| `/latestdata.json` | GET | Public | Live values file | Returns 500 (file never written) |
+| `/manual.pdf` | GET | Public | Serve manual PDF | Streams from FFat |
+| `/favicon.ico` | GET | Public | No-content response | 204 |
+| Not found | any | Redirect if unauthenticated | Login redirect or `handleNotFound` | n/a |
+
+## Ethernet route table
+
+The Ethernet router inside `webServerTask` (L132) only handles paths explicitly listed below. All other paths fall through to the home page. Ethernet is only initialized when GSM internet is not up at boot (see [Networking](/networking)).
+
+| Route | Method | Auth | Purpose | Notes |
+| --- | --- | --- | --- | --- |
+| `/ping` | GET | Public | Health check | Returns `OK` |
+| `/login` | GET, POST | Public | Login page | POST sets `isAuthenticated = true` |
+| `/confirm_logout` | GET | Public | Clear auth flag | n/a |
+| `/logout` | GET | Protected | Logout page | Redirects to login after confirmation |
+| `/config` | GET | Protected | Modbus list page | n/a |
+| `/add_modbus` | GET | Protected | Add device form | **No 32-device limit check** |
+| `/edit_modbus` | GET | Protected | Edit device form | n/a |
+| `/save_modbus` | POST | Protected | Save device config | **No duplicate-register check** |
+| `/delete_modbus` | GET | Protected | Delete device | n/a |
+| `/network_settings` | GET, POST | Protected | Network settings | POST saves non-empty values only |
+| `/save_network_settings` | GET | Protected | Network settings page | Alias to reload the form |
+| `/protocols` | GET, POST | Protected | Protocol settings | POST uses `saveProtocolsFromBody` |
+| `/interface` | GET, POST | Protected | IO enable flags | POST writes `/modbus_gateway.json` |
+| `/servers` | GET, POST | Protected | Server settings (NTP/FTP) | POST writes `/servers.json` directly |
+| `/ota` | GET | Protected | OTA page | Uses `buildOTAPageForEthernet` |
+| `/update_eth` | POST | Protected | Ethernet OTA binary upload | Raw `application/octet-stream` |
+| `/reboot` | GET, POST | Protected | Reboot | `now=1` or POST triggers reboot |
+| `/factory_reset` | GET, POST | Protected | Factory reset | POST formats FFat and reboots |
+| `/profile` | GET | Protected | Profile page | **No POST handler** |
+| Any other | any | Redirect if unauthenticated | Falls through to `buildHomePage` | n/a |
+
+<Info>
+  Ethernet does **not** serve `/network_status`, `/io_status`, `/modbus_status`, `/latestdata.json`, `/manual.pdf`, `/update`, `/reset`, or `/set_auto_ota`. Status widgets and auto-OTA toggles that rely on these routes will not work over Ethernet.
+</Info>
+
+## Wi-Fi vs Ethernet differences
+
+| Behavior | Wi-Fi (`WebServer`) | Ethernet (`EthernetServer`) |
+| --- | --- | --- |
+| Auth enforcement | `handleProtectedPage` wrapper | Inline rewrite to `/login` |
+| POST body parsing | `server.arg()` | `getPostBody()` + `getFormValue()` |
+| Response chunking | Standard HTTP | 512-byte chunks (ENC28J60 buffer limit) |
+| SPI mutex | Not needed | `ethernetSpiMutex` taken per client |
+| Unknown path | Redirect to login or `handleNotFound` | Returns home page |
+| Modbus save validation | 32-device limit, duplicate-register check | No limits, no duplicate check |
+| Network settings save | Copies `settings_s`, then `saveSettings()` | Only overwrites non-empty fields (`saveNetworkSettingsFromBody`) |
+| Protocol numeric fields | Parsed with `toInt()` from `server.arg()` | Parsed with `toInt()` even if missing (becomes 0) |
+| FTP fields on servers form | Only saved when `Set_FTP` is checked | Same |
+
+## Form field reference
+
+The sections below list the fields sent by each HTML form and the struct or file they update.
+
+### Login (`/login`)
+
+| Field | Destination |
+| --- | --- |
+| `username` | Compared against `login.username` |
+| `password` | Compared against `login.password` |
+
+### Reset password (`/reset`)
+
+| Field | Destination |
+| --- | --- |
+| `pin` | Compared against `RESET_PIN` (factory PIN in `definitions.h`) |
+| `new_pass` | Written to `login.password` and `/login.json` |
+
+### Profile (`/profile`)
+
+| Field | Destination |
+| --- | --- |
+| `auth_mode` | `"password"` or `"pin"` |
+| `old_password` | Current password check |
+| `reset_pin` | Current PIN check |
+| `new_password` | New value for `login.password` |
+
+### Interface (`/interface`)
+
+| Field | Destination |
+| --- | --- |
+| `enable_420ma_ch1` | `mbConfig_s.enable_420ma_ch1` |
+| `enable_420ma_ch2` | `mbConfig_s.enable_420ma_ch2` |
+| `enable_1_10v_ch1` | `mbConfig_s.enable_1_10v_ch1` |
+| `enable_1_10v_ch2` | `mbConfig_s.enable_1_10v_ch2` |
+| `enable_io_ch1` | `mbConfig_s.enable_io_ch1` |
+| `enable_io_ch2` | `mbConfig_s.enable_io_ch2` |
+
+### Servers (`/servers`)
+
+| Field | Destination |
+| --- | --- |
+| `NTP_IP` | `servers.ntpServerName` |
+| `NTP_delay` | `servers.ntpsynctimeinterval` (minutes) |
+| `Set_FTP` | `servers.use_FTP` (boolean) |
+| `FTP_IP` | `servers.ftp_server` |
+| `FTP_port` | `servers.ftp_port` |
+| `FTP_username` | `servers.ftp_user` |
+| `FTP_password` | `servers.ftp_pass` |
+| `FTP_path` | `servers.ftp_path` |
+| `FTP_delay` | `servers.FTP_DELAY` (minutes) |
+
+### Network settings (`/network_settings`)
+
+| Field | Destination |
+| --- | --- |
+| `mode` | `settings_s.mode` (`AP Only` / `STA Only` / `Both`) |
+| `ap_ssid` | `settings_s.ap_user` |
+| `ap_pass` | `settings_s.ap_pass` |
+| `std_ssid` | `settings_s.std_ssid` |
+| `std_password` | `settings_s.std_password` |
+| `eth_mode` | `settings_s.eth_mode` (`Dynamic` / `Static`) |
+| `eth_ip` | `settings_s.eth_ip` |
+| `eth_subnet` | `settings_s.eth_subnet` |
+| `eth_gateway` | `settings_s.eth_gateway` |
+| `wifi_mode` | `settings_s.wifi_mode` (`Dynamic` / `Static`) |
+| `wifi_ip` | `settings_s.wifi_ip` |
+| `wifi_subnet` | `settings_s.wifi_subnet` |
+| `wifi_gateway` | `settings_s.wifi_gateway` |
+
+### Protocols (`/protocols`)
+
+| Field | Destination |
+| --- | --- |
+| `proto_HTTP` | `settings_s.use_http` |
+| `proto_TCP` | `settings_s.use_tcp` |
+| `proto_MQTT` | `settings_s.use_mqtt` |
+| `http_scheme` | `settings_s.http_scheme` (`http` / `https`) |
+| `http_url` | `settings_s.http_url` |
+| `http_auth_type` | `settings_s.http_auth_type` (`None` / `Bearer` / `APIKey`) |
+| `http_token` | `settings_s.http_token` |
+| `http_key_value` | `settings_s.http_key_value` |
+| `http_ca_cert_path` | `settings_s.http_ca_cert_path` |
+| `http_client_cert_path` | `settings_s.http_client_cert_path` |
+| `http_private_key_path` | `settings_s.http_private_key_path` |
+| `tcp_ip` | `settings_s.tcp_ip` |
+| `tcp_port` | `settings_s.tcp_port` |
+| `mqtt_broker` | `settings_s.mqtt_broker` |
+| `mqtt_port` | `settings_s.mqtt_port` |
+| `mqtt_uplink` | `settings_s.mqtt_uplink` |
+| `mqtt_downlink` | `settings_s.mqtt_downlink` (stored, unused) |
+| `mqtt_auth_type` | `settings_s.mqtt_auth_type` (`None` / `UserPass` / `Token`) |
+| `mqtt_username` | `settings_s.mqtt_username` |
+| `mqtt_password` | `settings_s.mqtt_password` |
+| `mqtt_token` | `settings_s.mqtt_token` |
+| `trans_delay` | `settings_s.trans_delay` (seconds) |
+
+### Save Modbus (`/save_modbus`)
+
+| Field | Destination |
+| --- | --- |
+| `device_index` | Index in `modbusDevices_s[]` |
+| `slave_id` | `modbusDevices_s[idx].slave_id` |
+| `baud_rate` | `modbusDevices_s[idx].baud_rate` |
+| `parity` | `modbusDevices_s[idx].parity` |
+| `stop_bits` | `modbusDevices_s[idx].stop_bits` |
+| `timeout` | `modbusDevices_s[idx].timeout` |
+| `reg_type` | `modbusDevices_s[idx].reg_type` |
+| `num_registers` | `modbusDevices_s[idx].num_registers` |
+| `reg_1` .. `reg_N` | `modbusDevices_s[idx].registers[]` |
+
+<Warning>
+  On Ethernet `save_modbus`, `num_registers` is not bounded to `MAX_REGISTERS_PER_DEVICE` (150) and duplicate registers are not rejected. On Wi-Fi, both checks exist.
+</Warning>
+
+## JSON status endpoints
+
+### `/network_status`
+
+```json
+{
+  "mac_address": "AA:BB:CC:DD:EE:FF",
+  "wifi_ssid": "ethicstech",
+  "wifi_ip": "192.168.1.50",
+  "wifi_connected": true,
+  "eth_ip": "192.168.1.100",
+  "eth_online": false,
+  "sim_inserted": false,
+  "sim_online": false,
+  "ap_ssid": "Iotgateway_lite",
+  "ap_ip": "192.168.4.1",
+  "sim_switch_enabled": false,
+  "sim1_inserted": true,
+  "sim2_inserted": false,
+  "active_sim": 1
+}
+```
+
+### `/io_status`
+
+```json
+{
+  "enable_420ma_ch1": true,
+  "enable_420ma_ch2": true,
+  "enable_1_10v_ch1": true,
+  "enable_1_10v_ch2": true,
+  "enable_io_ch1": true,
+  "enable_io_ch2": true
+}
+```
+
+### `/modbus_status`
+
+```json
+{
+  "device_count": 2,
+  "devices": [
+    {
+      "idx": 0,
+      "slave_id": 1,
+      "baud_rate": 9600,
+      "parity": "None",
+      "stop_bits": 1,
+      "reg_type": "Holding Register",
+      "num_registers": 3,
+      "registers": [40001, 40002, 40003]
+    }
+  ]
+}
+```
+
+### `/latestdata.json`
+
+Always returns `500 "File not found"` because the file is never written by current firmware (the `saveTestDataToFFat()` prototype exists but is not called).
+
+## Save-then-reboot pattern
+
+Every configuration POST handler calls `saveSettings()`, `saveConfig()`, `saveServerconfig()`, or `saveModbusDevice()` and then returns a styled confirmation page with two buttons: **Back** (to continue editing) and **Reboot Now** (to `/reboot?now=1`). The settings structs used by the runtime (`settings`, `mbConfig`, `modbusDevices`) are only copied from their shadow counterparts (`settings_s`, `mbConfig_s`, `modbusDevices_s`) during boot load, so changes do not take effect until after a reboot.
+
+The servers (`servers`) and login (`login`) structs are edited live or saved immediately, so NTP/FTP and credential changes apply without a reboot.
+
+## Security properties
+
+The following security characteristics are implemented as a consequence of the current code, not as recommended practices:
+
+- **No HTTPS / TLS on either interface.** All traffic is plain HTTP.
+- **No CSRF tokens.** Any authenticated client can POST forms on behalf of another.
+- **No rate limiting.** Login and reset pages can be brute-forced.
+- **Plaintext credential storage.** `/login.json` stores the password in plain text.
+- **Global auth flag.** One successful login authenticates all clients on Wi-Fi and Ethernet simultaneously.
+- **Unauthenticated POST `/update`.** Anyone on the Wi-Fi network or AP can flash firmware without logging in.
+- **Unauthenticated GET `/set_auto_ota`.** Auto-OTA state and company name can be changed by any client.
+- **Unauthenticated `/reset`.** The factory PIN reset page is public; the PIN is hard-coded in `definitions.h` (`RESET_PIN`).
+- **Default credentials.** Factory defaults include a hard-coded default STA password and `admin/admin` login.

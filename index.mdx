@@ -1,20 +1,122 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Project overview"
+description: "Overview of the Ethicstech IoT Gateway Lite firmware, its capabilities, source files, and how this documentation was produced."
+sidebarTitle: "Overview"
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+The Ethicstech IoT Gateway Lite is an ESP32-based firmware that reads industrial sensors (4-20 mA, 0-10 V, digital inputs) and Modbus/RS-485 devices, then transmits the data over cellular (SIM7672S), Ethernet (ENC28J60), or Wi-Fi using HTTP, MQTT, or TCP. It also supports offline buffering to FTP and over-the-air (OTA) updates. This documentation was produced from a single static code snapshot (git commit `d9186af`) and does not include information from the repository PDF, which could not be parsed in this environment.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+## What the firmware does
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+At a high level, the firmware performs the following loop:
+
+1. **Acquire**: reads enabled analog channels via an ADS1115 ADC, digital inputs via GPIO, and Modbus registers via an RS-485 transceiver.
+2. **Package**: builds a JSON payload with sensor values, a timestamp, the device MAC address, and a monotonic cycle count.
+3. **Transmit**: tries to send the payload over GSM first, then Ethernet, then Wi-Fi STA. If all paths fail and FTP buffering is enabled, it appends the payload to a local backup file on FFat.
+4. **Buffer/Upload**: periodically uploads the backup file to an FTP server when connectivity returns.
+5. **Serve**: runs a web configuration UI on port 80 over both Wi-Fi and Ethernet.
+
+## Capabilities and status
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| 4-20 mA analog input (2 channels) | Implemented | ADS1115 A0/A1, averaged 3 samples, scaled by inferred ~149.5 ohm equivalent |
+| 0-10 V analog input (2 channels) | Implemented | ADS1115 A2/A3, averaged 3 samples, mapped 0..3000 mV to 0..10 V |
+| Digital input (2 channels) | Implemented | GPIO 19 and 4, `INPUT_PULLDOWN` |
+| Modbus RTU/RS-485 | Implemented | Up to 32 devices, 150 registers each; per-device baud/parity/stop/retype |
+| HTTP POST (Wi-Fi) | Implemented | HTTP and HTTPS; mTLS or `setInsecure()`; Bearer or API key auth |
+| HTTP POST (Ethernet) | Implemented | Plain HTTP only (no TLS) |
+| HTTP POST (GSM) | Implemented | Via `AT+HTTP*`; SSL when URL is HTTPS |
+| MQTT publish (Wi-Fi) | Implemented | PubSubClient; disconnects after each publish |
+| MQTT publish (Ethernet) | Implemented | PubSubClient over UIPEthernet |
+| MQTT publish (GSM) | Implemented | `AT+CMQTT*`; QoS 1; no persistent session |
+| TCP socket (Wi-Fi) | Implemented | Connect, write, close |
+| TCP socket (Ethernet) | Implemented | Connect, write, close |
+| TCP socket (GSM) | Not implemented | Code path exists but only logs; no send logic |
+| FTP upload / offline buffering | Implemented | Raw FTP (Ethernet), ESP32_FTPClient (Wi-Fi), FTPS via AT (GSM) |
+| Web configuration UI | Implemented | Port 80 on Wi-Fi AP/STA and Ethernet; inline HTML builders |
+| Auto OTA updates | Implemented | Hourly check over HTTP; Ethernet or Wi-Fi only |
+| Manual OTA updates | Implemented | Multipart upload (Wi-Fi) and raw octet-stream (Ethernet) |
+| Factory reset via BOOT button | Implemented | Double-press formats FFat and restarts |
+| RTC timestamping | Implemented | MCP7940 external RTC; falls back to ESP32 internal clock |
+| NTP time sync | Implemented | Ethernet UDP NTP; Wi-Fi `configTime`; GSM HTTP time from vendor endpoint |
+| Dual-SIM switchover | Configured but not used | `sim_switch = false` disables dual-SIM logic at compile time |
+| SMS alerts | Commented out / unused | `sendSMS` exists but is never called |
+| MQTT downlink/subscribe | Configured but not used | `mqtt_downlink` field stored; no subscribe handling implemented |
+
+## Supported interfaces and protocols
+
+The following table maps each physical interface to the protocols and services available on it.
+
+| Interface | HTTP | MQTT | TCP | FTP upload | Web UI | OTA |
+| --- | --- | --- | --- | --- | --- | --- |
+| GSM/SIM7672S | Yes | Yes | No | Yes (FTPS AT) | No | No |
+| Ethernet ENC28J60 | Yes (plain) | Yes | Yes | Yes (raw FTP) | Yes | Yes |
+| Wi-Fi (AP or STA) | Yes (HTTPS possible) | Yes | Yes | Yes (ESP32_FTPClient) | Yes | Yes |
+
+<Note>
+  Ethernet initialization in `backendTask()` only happens when GSM internet is not up (`lite_V_0_6_ffat__hybrid.ino` L462-474). Therefore, Ethernet and GSM internet paths are mutually exclusive at boot.
+</Note>
+
+## Source files and responsibilities
+
+| File | Lines | Purpose |
+| --- | --- | --- |
+| `lite_V_0_6_ffat__hybrid.ino` | ~7,600 | Main sketch: `setup()`, `loop()`, FreeRTOS tasks, web UI HTML builders and HTTP handlers, OTA logic, JSON load/save for FFat |
+| `definitions.h` | ~190 | Pin definitions, struct declarations (`SettingsConfig`, `ModbusConfig`, `ModbusDevice`, `LoginCredentials`, `server_config`), limits, APN strings |
+| `functions.h` | ~1,470 | Wi-Fi, Ethernet ENC28J60, MQTT/HTTP/TCP over Ethernet and Wi-Fi, Modbus/RS-485, ADS1115, backup file helpers, raw FTP client, NTP, RTC, `ESP32_FTPClient` wrapper |
+| `sima7672s.h` | ~980 | SIMA7672S/SIM7672S 4G modem AT commands: power, SIM select, APN connect, MQTT, HTTP, HTTP time, FTPS, signal monitoring |
+
+<Info>
+  All three headers are `#include`d directly into the single `.ino` translation unit. There is no separate compilation; globals defined in the headers and main sketch are shared across the entire build.
+</Info>
+
+## Version and naming
+
+- Declared version: `V2.0.0` (`PRODUCT_VERSION` and `SOFTWARE_VERSION` at `lite_V_0_6_ffat__hybrid.ino` L16-18)
+- Filename: `lite_V_0_6_ffat__hybrid.ino`
+
+This discrepancy exists in the repository and is not explained by any comment or build metadata. Treat the declared `V2.0.0` as the firmware version string. Why the filename says `V_0_6` is not documented in the source.
+
+## Historical and reference material
+
+- The `Refernce/` directory contains older copies (`Refernce/lite_V_0_6_ffat.ino`, `ethandwifiweb.ino`, `https/https.ino`). These are not the active build.
+- The repository PDF (`IOT Gateway Lite Version 1 v4.pdf`) could not be parsed in this environment, so its contents are not included in this documentation.
+- `litecode.zip` was present but its contents were not inspected.
+
+## What this documentation covers
+
+This site is written for firmware developers and maintainers. It covers:
+
+- Build environment prerequisites and first-boot setup ([Build and setup](/build-and-setup))
+- Software architecture, tasks, and concurrency model ([Architecture](/architecture))
+- Hardware pinout and analog front-end assumptions ([Hardware](/hardware))
+- Firmware runtime flow from boot to transmit ([Runtime flow](/runtime-flow))
+- Data acquisition details for each input type ([Data acquisition](/data-acquisition))
+- Networking stack, transport priority, and auth behavior ([Networking](/networking))
+- Web UI routes, auth model, and known limitations ([Web interface](/web-interface))
+- Configuration persistence, JSON files, and FFat layout ([Configuration](/configuration))
+- Storage, offline buffering, and FTP upload behavior ([Storage and FTP](/storage-and-ftp))
+- Time sources, RTC, and NTP sync ([Time and RTC](/time-and-rtc))
+- OTA update mechanisms and reset behavior ([OTA and reset](/ota-and-reset))
+- Troubleshooting and known issues ([Troubleshooting](/troubleshooting))
+- Documented limitations and roadmap items ([Limitations](/limitations), [Roadmap](/roadmap))
+- Quick code-reference tables ([Code reference](/code-reference))
+
+<CardGroup cols={2}>
+  <Card title="Build and setup" icon="wrench" href="/build-and-setup">
+    Prerequisites, library list, and first-boot configuration steps.
+  </Card>
+
+  <Card title="Architecture" icon="layers" href="/architecture">
+    Task layout, shared resources, and concurrency patterns.
+  </Card>
+
+  <Card title="Hardware" icon="cpu" href="/hardware">
+    Pin assignments, interface constraints, and verification notes.
+  </Card>
+
+  <Card title="Runtime flow" icon="play" href="/runtime-flow">
+    Boot sequence, loop behavior, and transport priority.
+  </Card>
+</CardGroup>

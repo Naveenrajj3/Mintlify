@@ -1,7 +1,7 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Ethicstech IoT Gateway Lite",
   "colors": {
     "primary": "#16A34A",
     "light": "#07C983",
@@ -11,44 +11,51 @@
   "navigation": {
     "pages": [
       {
-        "group": "Getting Started",
+        "group": "Getting started",
         "pages": [
           "index",
-          "quickstart"
+          "build-and-setup"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture",
+          "hardware",
+          "runtime-flow"
+        ]
+      },
+      {
+        "group": "Subsystems",
+        "pages": [
+          "data-acquisition",
+          "networking",
+          "web-interface",
+          "configuration",
+          "storage-and-ftp",
+          "time-and-rtc",
+          "ota-and-reset"
+        ]
+      },
+      {
+        "group": "Operations and planning",
+        "pages": [
+          "troubleshooting",
+          "limitations",
+          "roadmap"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "code-reference"
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
+    ]
   },
   "logo": {
     "light": "/logo/light.svg",
     "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
-    }
   },
   "contextual": {
     "options": [
@@ -61,12 +68,5 @@
       "cursor",
       "vscode"
     ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
   }
 }

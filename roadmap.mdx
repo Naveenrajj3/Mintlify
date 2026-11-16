@@ -1,0 +1,74 @@
+---
+title: "Improvement roadmap"
+description: "Prioritized recommendations for reliability, security, data integrity, maintainability, observability, testing, and documentation."
+---
+
+<Note>
+  Everything on this page is a **proposal**, not implemented. Priorities are suggestions based on the current source. The project team should review and adjust them against field requirements.
+</Note>
+
+This roadmap groups recommendations by theme. Each item includes a priority, a short observation from the current code, the rationale, and the expected benefit.
+
+## Reliability
+
+| Priority | Recommendation | Code observation | Rationale | Expected benefit |
+| --- | --- | --- | --- | --- |
+| P1 | Add server-side bounds on `num_registers` and `trans_delay` | `save_modbus` and Ethernet `saveModbusFromBody` do not bound `num_registers`; `trans_delay` 0 causes sends every loop iteration (`main` L635). | Prevents memory corruption, excessive CPU use, and scheduler overhead. | Fewer crashes and less power draw. |
+| P1 | Fix `finalizeJsonArray` to only run on success | `finalizeJsonArray()` appends `]` before upload; failed uploads corrupt the backup file (`fn` L1164). | Guarantees backup file remains valid JSON after retry. | Reliable offline data recovery. |
+| P1 | Decouple offline buffering from `use_FTP` | `appendJsonObject` returns early unless `use_FTP` is true (`fn` L951). | Users enabling HTTP/MQTT/TCP only lose data during outages. | All protocols benefit from queuing. |
+| P2 | Buffer during config mode instead of discarding | `BackendTask` drops payloads when `wifiConfigMode` or `ethernetConfigMode` is active (`main` L758). | Configuration changes should not cause permanent data gaps. | No data loss while adjusting settings. |
+| P2 | Cap backup file size and check free space | `appendJsonObject` has no size limit or free-space guard (`fn` L951). | Prevents FFat exhaustion and mount failures. | Stable long-term operation. |
+| P2 | Explicit restart policy separate from LED helper | The 30-minute restart rule is triggered by `led_blink(x, 1)` (`fn` L946-948). | Separates restart logic from an unrelated UI helper. | Predictable behavior and easier debugging. |
+| P2 | Retry and backoff for OTA download | Auto OTA retries once per hour with no backoff (`startAutoOTAUpdateTask` L6439). | Reduces server load and radio traffic after transient failures. | Lower power and network load. |
+
+## Security
+
+| Priority | Recommendation | Code observation | Rationale | Expected benefit |
+| --- | --- | --- | --- | --- |
+| P1 | Protect `POST /update` and `/set_auto_ota` with authentication | `handleOTAUpdate` (Wi-Fi) and the auto-OTA toggle are public (`main` L6975, auto-OTA handler). | Prevents unauthorized firmware flashing and settings changes. | Controlled update surface. |
+| P1 | Replace global `isAuthenticated` with per-session or token-based auth | One boolean applies to all clients and both interfaces (`main` L2828). | Eliminates session confusion and cross-interface auth leakage. | Proper session isolation. |
+| P1 | Store credentials hashed or at least encrypted | `/login.json` stores plaintext username and password. | Reduces exposure if FFat is read offline. | Better credential hygiene. |
+| P2 | Add OTA signature verification and HTTPS | OTA uses plain HTTP and MD5 only (`Update.setMD5`). | Ensures firmware comes from a trusted source and was not modified in transit. | Supply-chain security. |
+| P2 | Fix CA certificate path bug in `prepareMtlsClient` | The CA is loaded from `http_client_cert_path` instead of `http_ca_cert_path` (`fn` L491). | Makes mTLS HTTPS behave as intended. | Working certificate pinning. |
+| P2 | Add CSRF tokens to state-changing forms | No forms include CSRF protection. | Prevents cross-site request forgery from tricking an admin browser. | Safer web management. |
+| P2 | Add rate limiting on login, PIN reset, and OTA | No delay or attempt limit exists on sensitive endpoints. | Reduces brute-force and DoS risk. | Hardened management interface. |
+
+## Data integrity
+
+| Priority | Recommendation | Code observation | Rationale | Expected benefit |
+| --- | --- | --- | --- | --- |
+| P1 | Use NDJSON or append-valid JSON instead of manual array finalization | `finalizeJsonArray` is fragile across retries (`fn` L1164). | Produces recoverable, line-oriented backup format. | Robust replay and parsing. |
+| P1 | Add JSON schema versioning and migration | No version field exists in any config file. | Allows safe changes to config shape across releases. | Smoother upgrades. |
+| P2 | Remove duplicate keys from Modbus payload | Input/Holding reads emit `M<dev>_<addr>` and `M<dev>_<addr+1>`; adjacent addresses can overwrite earlier keys (`fn` L800). | Guarantees a well-defined JSON payload for downstream consumers. | Consistent API contract. |
+| P2 | Validate and normalize the `+05:30` timestamp offset | The offset is hard-coded regardless of actual location or RTC state (`main` L747-750). | Supports deployments in other time zones or with corrected RTC sources. | Accurate time representation. |
+
+## Maintainability
+
+| Priority | Recommendation | Code observation | Rationale | Expected benefit |
+| --- | --- | --- | --- | --- |
+| P1 | Unify Wi-Fi and Ethernet form handlers | `handleProtocolsPost` and `saveProtocolsFromBody` validate differently (`main`). | One validation path reduces divergence bugs. | Easier changes, fewer security gaps. |
+| P1 | Remove duplicated login save/load functions | `saveLoginSettings`/`loadLoginSettings` and `saveLogininSettings`/`loadLogininSettings` both exist (`main` L1682, L1905). | Eliminates confusion and stale fallback paths. | Cleaner boot sequence. |
+| P2 | Split monolithic `.ino` into modules | The sketch is ~7600 lines with tasks, HTML, protocol logic, and OTA inline. | Easier code review, unit testing, and parallel work. | Faster iteration. |
+| P2 | Replace blocking `delay()` calls with non-blocking state machines | `initGSM`, `led_blink`, and Modbus retries use `delay()` inside tasks (`main`, `fn`). | Improves responsiveness and allows tighter watchdog timeouts. | More predictable timing. |
+| P2 | Add mutex or atomic access for `servers` and `settings` | `servers` is edited by the web task while the backend reads it without locks. | Prevents torn reads and inconsistent transport configuration. | Safer concurrency. |
+| P2 | Document APN configuration in the UI or remove unused APN fields | No handler writes `apn`/`custom_apn` (`main` handlers). | Either expose APN to users or remove the dead config surface. | Clearer UX. |
+| P2 | Implement TCP over GSM or document the limitation in the UI | The UI lets users enable TCP, but GSM does not support it (`main` L802-864). | Prevents false expectation of TCP-over-cellular. | Honest feature mapping. |
+
+## Observability
+
+| Priority | Recommendation | Code observation | Rationale | Expected benefit |
+| --- | --- | --- | --- | --- |
+| P1 | Implement `/latestdata.json` or remove the UI request for it | The file is never written (`main` L80). | Eliminates permanent 500 errors on the home page. | Clean UI behavior. |
+| P1 | Add a structured status endpoint | No single endpoint exposes health, last send time, queue depth, or network state. | Enables external monitoring and faster remote diagnosis. | Reduced field-debugging time. |
+| P2 | Add runtime counters for send success/failure per transport | Success/failure rates are only implicit in `last_network_fail` and `count__`. | Helps identify intermittent network or broker issues. | Better telemetry. |
+| P2 | Watchdog all tasks, not only `BackendTask` | Only the backend task is registered with the TWDT (`main` L407-421). | Detects freezes in the web server or button task. | Higher system resilience. |
+
+## Testing and documentation
+
+| Priority | Recommendation | Code observation | Rationale | Expected benefit |
+| --- | --- | --- | --- | --- |
+| P1 | Add host-side unit tests for `compareVersion`, payload builder, and Modbus scaling | No automated tests exist in the repository. | Catches regressions in version parsing, JSON shape, and analog math. | Faster, safer releases. |
+| P1 | Create `platformio.ini` or `sketch.yaml` with pinned library versions | No build metadata exists; ArduinoJson v7 is inferred from `JsonDocument` usage. | Reproducible builds across workstations and CI. | Consistent binaries. |
+| P2 | Set up CI for build and static analysis | Single commit in repo; no CI configuration. | Prevents build breakages and flags common issues early. | Reduced manual QA. |
+| P2 | Document the intended partition table and board definition | `FFat.begin(true)` requires FAT support, but no partition file is present (`main` L1102). | Eliminates guesswork during initial flashing. | Smoother onboarding. |
+| P3 | Add a changelog and version migration guide | No schema version or migration logic exists. | Helps operators update fleets without reconfiguring from scratch. | Lower support burden. |
