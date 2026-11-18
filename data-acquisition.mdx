@@ -41,7 +41,7 @@ Channels are only added to the payload when the corresponding enable flag in `mb
 
 Both analog types average three samples taken 10 ms apart, then apply a mapping.
 
-**0-10 V (`read_10v`, L840-857)**
+**0-10 V (`read_10v`, L840-857)**
 
 ```cpp
 value = map(avg_mV, 0, 3000, 0, 10);
@@ -50,7 +50,7 @@ value = clamp(value, 0, 10);
 
 So a 10 V input is expected to appear as 3000 mV at the ADC pin, implying an external voltage divider. This requires hardware verification for your board.
 
-**4-20 mA (`read_420ma`, L859-879)**
+**4-20 mA (`read_420ma`, L859-879)**
 
 ```cpp
 value = avg_mV / 149.5;
