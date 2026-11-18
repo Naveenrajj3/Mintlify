@@ -119,7 +119,7 @@ When `ota_in_progress` is true (set by the auto/manual OTA paths), the backend s
 Web activity sets `wifiConfigMode` or `ethernetConfigMode` and records `lastWebActivity`. If either mode flag is set, the backend delays 100 ms and restarts the loop, so the web UI has full CPU and radio bandwidth (`backendTask` L569-581). The mode expires 30 s after the last request.
 
 <Warning>
-  If a config-mode session is active when a `trans_delay` cycle fires, the assembled payload is discarded and is not buffered (`backendTask` L758-762\`). Data is lost for that cycle.
+  If a config-mode session is active when a `trans_delay` cycle fires, the assembled payload is discarded and is not buffered (`backendTask` L758-762). Data is lost for that cycle.
 </Warning>
 
 #### SIM monitoring
